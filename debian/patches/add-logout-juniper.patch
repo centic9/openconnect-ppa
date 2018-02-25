@@ -1,0 +1,66 @@
+Description: add oncp_bye() to logout the Juniper session
+ .
+ The nc protocol lacked a .vpn_close_session function; without logout, the
+ VPN cookie remains active and can be used to restart the session, which is a
+ security hazard—especially when passing around OpenConnect logs on the
+ mailing list for development and troubleshooting.
+ .
+ Juniper logout is straightforward: GET /dana-na/auth/logout.cgi (with the
+ appropriate DSID cookie set).
+Author: Daniel Lenski <dlenski@gmail.com>
+Origin: upstream, http://git.infradead.org/users/dwmw2/openconnect.git/commitdiff/df273812d14b2b7c8d80f5a2b73a37a2d295307f
+Last-Update: 2018-02-25
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/library.c
++++ b/library.c
+@@ -122,7 +122,7 @@
+ #endif
+ 	}, {
+ 		.name = "nc",
+-		.vpn_close_session = NULL,
++		.vpn_close_session = oncp_bye,
+ 		.tcp_connect = oncp_connect,
+ 		.tcp_mainloop = oncp_mainloop,
+ 		.add_http_headers = oncp_common_headers,
+--- a/oncp.c
++++ b/oncp.c
+@@ -1257,3 +1257,28 @@
+ 	/* Work is not done if we just got rid of packets off the queue */
+ 	return work_done;
+ }
++
++int oncp_bye(struct openconnect_info *vpninfo, const char *reason)
++{
++	char *orig_path;
++	char *res_buf=NULL;
++	int ret;
++
++	/* We need to close and reopen the HTTPS connection (to kill
++	 * the oncp tunnel) and submit a new HTTPS request to logout.
++	 */
++	openconnect_close_https(vpninfo, 0);
++
++	orig_path = vpninfo->urlpath;
++	vpninfo->urlpath = strdup("dana-na/auth/logout.cgi"); /* redirect segfaults without strdup */
++	ret = do_https_request(vpninfo, "GET", NULL, NULL, &res_buf, 0);
++	vpninfo->urlpath = orig_path;
++
++	if (ret < 0)
++		vpn_progress(vpninfo, PRG_ERR, _("Logout failed.\n"));
++	else
++		vpn_progress(vpninfo, PRG_INFO, _("Logout successful.\n"));
++
++	free(res_buf);
++	return ret;
++}
+--- a/openconnect-internal.h
++++ b/openconnect-internal.h
+@@ -840,6 +840,7 @@
+ int queue_esp_control(struct openconnect_info *vpninfo, int enable);
+ int oncp_connect(struct openconnect_info *vpninfo);
+ int oncp_mainloop(struct openconnect_info *vpninfo, int *timeout);
++int oncp_bye(struct openconnect_info *vpninfo, const char *reason);
+ 
+ /* lzs.c */
+ int lzs_decompress(unsigned char *dst, int dstlen, const unsigned char *src, int srclen);

@@ -1,0 +1,4 @@
+fix-tests-shell-syntax.patch
+softhsm2-module-workaround.patch
+fix-ftbfs-ipv6-tclass-undeclared.patch
+add-logout-juniper.patch

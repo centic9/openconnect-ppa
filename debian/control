@@ -1,0 +1,76 @@
+Source: openconnect
+Maintainer: Mike Miller <mtmiller@debian.org>
+Section: net
+Priority: optional
+Build-Depends: debhelper (>= 11),
+               dpkg-dev (>= 1.17.14),
+               groff,
+               libgnutls28-dev,
+               libkrb5-dev,
+               liblz4-dev,
+               libp11-kit-dev,
+               libpcsclite-dev,
+               libproxy-dev,
+               libsocket-wrapper [!hurd-i386] <!nocheck>,
+               libstoken-dev,
+               libuid-wrapper [!alpha !hurd-i386 !kfreebsd-amd64 !kfreebsd-i386] <!nocheck>,
+               libxml2-dev,
+               ocserv [!hurd-i386 !kfreebsd-amd64 !kfreebsd-i386] <!nocheck>,
+               openssl <!nocheck>,
+               pkg-config,
+               python,
+               softhsm2 [!hurd-i386] <!nocheck>,
+               zlib1g-dev
+Standards-Version: 4.1.3
+Vcs-Browser: https://salsa.debian.org/debian/openconnect
+Vcs-Git: https://salsa.debian.org/debian/openconnect.git
+Homepage: http://www.infradead.org/openconnect/
+
+Package: openconnect
+Architecture: any
+Depends: vpnc-scripts, ${misc:Depends}, ${shlibs:Depends}
+Description: open client for Cisco AnyConnect VPN
+ OpenConnect is a client for Cisco's AnyConnect SSL VPN, which is supported by
+ the ASA5500 Series, by IOS 12.4(9)T or later on Cisco SR500, 870, 880, 1800,
+ 2800, 3800, 7200 Series and Cisco 7301 Routers, and probably others.
+ OpenConnect also supports the Pulse Connect Secure SSL VPN, formerly known as
+ the Juniper SSL VPN or the Junos Pulse VPN.
+
+Package: libopenconnect-dev
+Architecture: any
+Multi-Arch: same
+Section: libdevel
+Depends: libgnutls28-dev,
+         liblz4-dev,
+         libopenconnect5 (= ${binary:Version}),
+         libp11-kit-dev,
+         libpcsclite-dev,
+         libproxy-dev,
+         libstoken-dev,
+         libxml2-dev,
+         zlib1g-dev,
+         ${misc:Depends}
+Description: open client for Cisco AnyConnect VPN - development files
+ OpenConnect is a client for Cisco's AnyConnect SSL VPN, which is supported by
+ the ASA5500 Series, by IOS 12.4(9)T or later on Cisco SR500, 870, 880, 1800,
+ 2800, 3800, 7200 Series and Cisco 7301 Routers, and probably others.
+ OpenConnect also supports the Pulse Connect Secure SSL VPN, formerly known as
+ the Juniper SSL VPN or the Junos Pulse VPN.
+ .
+ This package provides the header and development files.
+
+Package: libopenconnect5
+Architecture: any
+Multi-Arch: same
+Section: libs
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Recommends: ca-certificates
+Pre-Depends: ${misc:Pre-Depends}
+Description: open client for Cisco AnyConnect VPN - shared library
+ OpenConnect is a client for Cisco's AnyConnect SSL VPN, which is supported by
+ the ASA5500 Series, by IOS 12.4(9)T or later on Cisco SR500, 870, 880, 1800,
+ 2800, 3800, 7200 Series and Cisco 7301 Routers, and probably others.
+ OpenConnect also supports the Pulse Connect Secure SSL VPN, formerly known as
+ the Juniper SSL VPN or the Junos Pulse VPN.
+ .
+ This package provides the shared library.

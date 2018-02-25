@@ -1,0 +1,59 @@
+#!/usr/bin/make -f
+
+AUTORECONF_SOURCES = aclocal.m4 config.guess config.sub configure install-sh \
+		     ltmain.sh m4/libtool.m4 m4/ltoptions.m4 m4/ltsugar.m4 \
+		     m4/ltversion.m4 m4/lt~obsolete.m4 missing Makefile.in \
+		     po/Makefile.in tests/Makefile.in www/Makefile.in \
+		     www/images/Makefile.in www/inc/Makefile.in \
+		     www/styles/Makefile.in
+VERSION_UPSTREAM := $(shell sed -ne 's|.*AC_INIT[^,]*, *\([0-9.]\+\).*|\1|p' configure.ac)
+VERSION_DEBIAN := $(shell dpkg-parsechangelog | sed -ne 's|^Version: *\(.*\)$$|\1|p')
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# Link with --as-needed to eliminate unused or indirect library dependencies
+export DEB_LDFLAGS_MAINT_APPEND = -Wl,--as-needed
+
+%:
+	dh $@ --list-missing
+
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		--disable-static \
+		--with-gnutls \
+		--htmldir=/usr/share/doc/openconnect/html \
+		--with-system-cafile=/etc/ssl/certs/ca-certificates.crt \
+		--with-vpnc-script=/usr/share/vpnc-scripts/vpnc-script
+	# Ensure version.c gets the right version string, either the upstream
+	# version if unmodified or the Debian version if building from a git
+	# snapshot or if the source has been patched.
+	[ -f version.c ] && cp -p version.c version.c.debian-backup \
+	                 || touch version.c.debian-clean
+	make version.c
+	if ! grep '"v$(VERSION_UPSTREAM)"' version.c > /dev/null; then \
+		sed -i -e 's|".*"|"v$(VERSION_DEBIAN)"|' version.c; \
+	fi
+
+override_dh_installchangelogs:
+	dh_installchangelogs www/changelog.html
+
+override_dh_compress:
+	dh_compress -Xhtml/changelog.html
+
+override_dh_strip:
+	dh_strip -plibopenconnect5 --dbgsym-migration='libopenconnect5-dbg (<< 7.08-2~)'
+	dh_strip -popenconnect --dbgsym-migration='openconnect-dbg (<< 7.08-2~)'
+
+override_dh_autoreconf:
+	for f in $(AUTORECONF_SOURCES); do \
+		[ ! -f $$f ] || [ -f $$f.debian-backup ] || mv $$f $$f.debian-backup; \
+	done
+	dh_autoreconf --as-needed
+
+override_dh_autoreconf_clean:
+	dh_autoreconf_clean
+	for f in $(AUTORECONF_SOURCES); do \
+		[ ! -f $$f.debian-backup ] || mv $$f.debian-backup $$f; \
+	done
+	[ ! -f version.c.debian-backup ] || mv version.c.debian-backup version.c
+	[ ! -f version.c.debian-clean ] || rm -f version.c.debian-clean version.c

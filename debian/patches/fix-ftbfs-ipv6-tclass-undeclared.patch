@@ -1,0 +1,20 @@
+Description: Fix FTBFS on systems without IPV6_TCLASS
+Author: Mike Miller <mtmiller@debian.org>
+Forwarded: http://lists.infradead.org/pipermail/openconnect-devel/2016-December/004140.html
+Last-Update: 2018-02-23
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/ssl.c
++++ b/ssl.c
+@@ -914,7 +914,11 @@
+ 		struct sockaddr_in6 *sin = (void *)vpninfo->dtls_addr;
+ 		sin->sin6_port = htons(port);
+ 		vpninfo->dtls_tos_proto = IPPROTO_IPV6;
++#if defined(IPV6_TCLASS)
+ 		vpninfo->dtls_tos_optname = IPV6_TCLASS;
++#else
++		vpninfo->dtls_tos_optname = 0;
++#endif
+ 	} else {
+ 		vpn_progress(vpninfo, PRG_ERR,
+ 			     _("Unknown protocol family %d. Cannot create UDP server address\n"),

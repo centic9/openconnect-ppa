@@ -1,0 +1,3 @@
+version=3
+opts=pgpsigurlmangle=s/$/.asc/ \
+ftp://ftp.infradead.org/pub/openconnect/openconnect-(.*)\.tar\.gz

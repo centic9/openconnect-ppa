@@ -1,0 +1,37 @@
+Description: tests: avoid using eval with variable assignments
+ .
+ For shell portability, avoid using eval with variable assignments to set
+ openconnect's environment. Shell implementations vary on whether
+ variable assignments in front of eval are marked as environment
+ variables or just treated as ordinary shell assignments.
+ .
+ Every call to $OPENCONNECT already has LD_PRELOAD=libsocket_wrapper.so
+ in front of it, so the "eval LD_PRELOAD=libsocket_wrapper.so" was
+ redundant anyway.
+Author: Mike Miller <mtmiller@debian.org>
+Origin: upstream, http://git.infradead.org/users/dwmw2/openconnect.git/commitdiff/8a3503350f819f4190a9b05fd613ad08a5c8bf8c
+Last-Update: 2016-12-24
+---
+This patch header follows DEP-3: http://dep.debian.net/deps/dep3/
+--- a/tests/auth-pkcs11
++++ b/tests/auth-pkcs11
+@@ -37,7 +37,7 @@ for TOKEN in ${pkcs11_tokens}; do
+ 	echo -n "Connecting to obtain cookie (token ${TOKEN} key ${KEY})... "
+ 	CERTURI="pkcs11:token=${TOKEN};${KEY};pin-value=1234"
+ 	( echo "test" | HOME=${srcdir} SOFTHSM2_CONF=softhsm2.conf LD_PRELOAD=libsocket_wrapper.so \
+-			    $OPENCONNECT -q $ADDRESS:443 -u test -c \"${CERTURI}\" --key-password 1234 --servercert=d66b507ae074d03b02eafca40d35f87dd81049d3 --cookieonly --passwd-on-stdin ) ||
++			    $OPENCONNECT -q $ADDRESS:443 -u test -c "${CERTURI}" --key-password 1234 --servercert=d66b507ae074d03b02eafca40d35f87dd81049d3 --cookieonly --passwd-on-stdin ) ||
+ 	    fail $PID "Could not connect with token ${TOKEN} key ${KEY##*/}!"
+     done
+ done
+--- a/tests/common.sh
++++ b/tests/common.sh
+@@ -31,7 +31,7 @@ mkdir -p $SOCKDIR
+ export SOCKET_WRAPPER_DIR=$SOCKDIR
+ export SOCKET_WRAPPER_DEFAULT_IFACE=2
+ ADDRESS=127.0.0.$SOCKET_WRAPPER_DEFAULT_IFACE
+-OPENCONNECT="eval LD_PRELOAD=libsocket_wrapper.so ${top_builddir}/openconnect"
++OPENCONNECT="${top_builddir}/openconnect"
+ 
+ certdir="${srcdir}/certs"
+ confdir="${srcdir}/configs"
