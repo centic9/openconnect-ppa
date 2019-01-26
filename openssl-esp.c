@@ -81,9 +81,9 @@ static int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *esp,
 #endif
 
 	if (decrypt)
-		ret = EVP_DecryptInit_ex(esp->cipher, encalg, NULL, esp->secrets, NULL);
+		ret = EVP_DecryptInit_ex(esp->cipher, encalg, NULL, esp->enc_key, NULL);
 	else
-		ret = EVP_EncryptInit_ex(esp->cipher, encalg, NULL, esp->secrets, NULL);
+		ret = EVP_EncryptInit_ex(esp->cipher, encalg, NULL, esp->enc_key, NULL);
 
 	if (!ret) {
 		vpn_progress(vpninfo, PRG_ERR,
@@ -99,7 +99,7 @@ static int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *esp,
 		destroy_esp_ciphers(esp);
 		return -ENOMEM;
 	}
-	if (!HMAC_Init_ex(esp->hmac, esp->secrets + EVP_CIPHER_key_length(encalg),
+	if (!HMAC_Init_ex(esp->hmac, esp->hmac_key,
 			  EVP_MD_size(macalg), macalg, NULL)) {
 		vpn_progress(vpninfo, PRG_ERR,
 			     _("Failed to initialize ESP HMAC\n"));
@@ -112,7 +112,7 @@ static int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *esp,
 	return 0;
 }
 
-int setup_esp_keys(struct openconnect_info *vpninfo)
+int setup_esp_keys(struct openconnect_info *vpninfo, int new_keys)
 {
 	struct esp *esp_in;
 	const EVP_CIPHER *encalg;
@@ -146,16 +146,22 @@ int setup_esp_keys(struct openconnect_info *vpninfo)
 		return -EINVAL;
 	}
 
-	vpninfo->old_esp_maxseq = vpninfo->esp_in[vpninfo->current_esp_in].seq + 32;
-	vpninfo->current_esp_in ^= 1;
+	if (new_keys) {
+		vpninfo->old_esp_maxseq = vpninfo->esp_in[vpninfo->current_esp_in].seq + 32;
+		vpninfo->current_esp_in ^= 1;
+	}
+
 	esp_in = &vpninfo->esp_in[vpninfo->current_esp_in];
 
-	if (!RAND_bytes((void *)&esp_in->spi, sizeof(esp_in->spi)) ||
-	    !RAND_bytes((void *)&esp_in->secrets, sizeof(esp_in->secrets))) {
-		vpn_progress(vpninfo, PRG_ERR,
-			     _("Failed to generate random keys for ESP:\n"));
-		openconnect_report_ssl_errors(vpninfo);
-		return -EIO;
+	if (new_keys) {
+		if (!RAND_bytes((void *)&esp_in->spi, sizeof(esp_in->spi)) ||
+		    !RAND_bytes((void *)&esp_in->enc_key, vpninfo->enc_key_len) ||
+		    !RAND_bytes((void *)&esp_in->hmac_key, vpninfo->hmac_key_len) ) {
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Failed to generate random keys for ESP:\n"));
+			openconnect_report_ssl_errors(vpninfo);
+			return -EIO;
+		}
 	}
 
 	ret = init_esp_ciphers(vpninfo, &vpninfo->esp_out, macalg, encalg, 0);
@@ -192,13 +198,8 @@ int decrypt_esp_packet(struct openconnect_info *vpninfo, struct esp *esp, struct
 		return -EINVAL;
 	}
 
-	/* Why in $DEITY's name would you ever *not* set this? Perhaps we
-	 * should do th check anyway, but only warn instead of discarding
-	 * the packet? */
-	if (vpninfo->esp_replay_protect &&
-	    verify_packet_seqno(vpninfo, esp, ntohl(pkt->esp.seq)))
+	if (verify_packet_seqno(vpninfo, esp, ntohl(pkt->esp.seq)))
 		return -EINVAL;
-
 
 	if (!EVP_DecryptInit_ex(esp->cipher, NULL, NULL, NULL,
 				pkt->esp.iv)) {
@@ -241,7 +242,7 @@ int encrypt_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt)
 		pkt->data[pkt->len + i] = i + 1;
 	pkt->data[pkt->len + padlen] = padlen;
 	pkt->data[pkt->len + padlen + 1] = 0x04; /* Legacy IP */
-	
+
 	if (!EVP_EncryptInit_ex(vpninfo->esp_out.cipher, NULL, NULL, NULL,
 				pkt->esp.iv)) {
 		vpn_progress(vpninfo, PRG_ERR,

@@ -48,7 +48,7 @@ static int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *esp,
 	destroy_esp_ciphers(esp);
 
 	enc_key.size = gnutls_cipher_get_key_size(encalg);
-	enc_key.data = esp->secrets;
+	enc_key.data = esp->enc_key;
 
 	err = gnutls_cipher_init(&esp->cipher, encalg, &enc_key, NULL);
 	if (err) {
@@ -59,7 +59,7 @@ static int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *esp,
 	}
 
 	err = gnutls_hmac_init(&esp->hmac, macalg,
-			       esp->secrets + enc_key.size,
+			       esp->hmac_key,
 			       gnutls_hmac_get_len(macalg));
 	if (err) {
 		vpn_progress(vpninfo, PRG_ERR,
@@ -72,7 +72,7 @@ static int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *esp,
 	return 0;
 }
 
-int setup_esp_keys(struct openconnect_info *vpninfo)
+int setup_esp_keys(struct openconnect_info *vpninfo, int new_keys)
 {
 	struct esp *esp_in;
 	gnutls_mac_algorithm_t macalg;
@@ -106,16 +106,22 @@ int setup_esp_keys(struct openconnect_info *vpninfo)
 		return -EINVAL;
 	}
 
-	vpninfo->old_esp_maxseq = vpninfo->esp_in[vpninfo->current_esp_in].seq + 32;
-	vpninfo->current_esp_in ^= 1;
+	if (new_keys) {
+		vpninfo->old_esp_maxseq = vpninfo->esp_in[vpninfo->current_esp_in].seq + 32;
+		vpninfo->current_esp_in ^= 1;
+	}
+
 	esp_in = &vpninfo->esp_in[vpninfo->current_esp_in];
 
-	if ((ret = gnutls_rnd(GNUTLS_RND_NONCE, &esp_in->spi, sizeof(esp_in->spi))) ||
-	    (ret = gnutls_rnd(GNUTLS_RND_RANDOM, &esp_in->secrets, sizeof(esp_in->secrets)))) {
-		vpn_progress(vpninfo, PRG_ERR,
-			     _("Failed to generate random keys for ESP: %s\n"),
-			     gnutls_strerror(ret));
-		return -EIO;
+	if (new_keys) {
+		if ((ret = gnutls_rnd(GNUTLS_RND_NONCE, &esp_in->spi, sizeof(esp_in->spi))) ||
+		    (ret = gnutls_rnd(GNUTLS_RND_RANDOM, &esp_in->enc_key, vpninfo->enc_key_len)) ||
+		    (ret = gnutls_rnd(GNUTLS_RND_RANDOM, &esp_in->hmac_key, vpninfo->hmac_key_len)) ) {
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Failed to generate random keys for ESP: %s\n"),
+				     gnutls_strerror(ret));
+			return -EIO;
+		}
 	}
 
 	ret = init_esp_ciphers(vpninfo, &vpninfo->esp_out, macalg, encalg);
@@ -154,11 +160,7 @@ int decrypt_esp_packet(struct openconnect_info *vpninfo, struct esp *esp, struct
 		return -EINVAL;
 	}
 
-	/* Why in $DEITY's name would you ever *not* set this? Perhaps we
-	 * should do th check anyway, but only warn instead of discarding
-	 * the packet? */
-	if (vpninfo->esp_replay_protect &&
-	    verify_packet_seqno(vpninfo, esp, ntohl(pkt->esp.seq)))
+	if (verify_packet_seqno(vpninfo, esp, ntohl(pkt->esp.seq)))
 		return -EINVAL;
 
 	gnutls_cipher_set_iv(esp->cipher, pkt->esp.iv, sizeof(pkt->esp.iv));
@@ -196,7 +198,7 @@ int encrypt_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt)
 		pkt->data[pkt->len + i] = i + 1;
 	pkt->data[pkt->len + padlen] = padlen;
 	pkt->data[pkt->len + padlen + 1] = 0x04; /* Legacy IP */
-	
+
 	gnutls_cipher_set_iv(vpninfo->esp_out.cipher, pkt->esp.iv, sizeof(pkt->esp.iv));
 	err = gnutls_cipher_encrypt(vpninfo->esp_out.cipher, pkt->data, pkt->len + padlen + 2);
 	if (err) {

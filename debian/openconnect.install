@@ -1,3 +1,4 @@
+usr/libexec/openconnect/*.sh
 usr/sbin
 usr/share/doc/openconnect/html
 usr/share/locale

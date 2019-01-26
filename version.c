@@ -1,1 +1,1 @@
-const char *openconnect_version_str = "v7.08";
+const char *openconnect_version_str = "v8.02";

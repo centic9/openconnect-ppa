@@ -6,9 +6,6 @@
 /* The GnuTLS priority string */
 #undef DEFAULT_PRIO
 
-/* Location of System CA trust file */
-#undef DEFAULT_SYSTEM_CAFILE
-
 /* Default vpnc-script locatin */
 #undef DEFAULT_VPNCSCRIPT
 
@@ -45,41 +42,20 @@
 /* Build with ESP support */
 #undef HAVE_ESP
 
+/* Have explicit_bzero() function */
+#undef HAVE_EXPLICIT_BZERO
+
+/* Have explicit_memset() function */
+#undef HAVE_EXPLICIT_MEMSET
+
 /* Have fdevname_r() function */
 #undef HAVE_FDEVNAME_R
 
 /* Have getline() function */
 #undef HAVE_GETLINE
 
-/* From GnuTLS 3.0.4 */
-#undef HAVE_GNUTLS_CERTIFICATE_SET_KEY
-
-/* From GnuTLS 3.0.20 */
-#undef HAVE_GNUTLS_CERTIFICATE_SET_X509_SYSTEM_TRUST
-
-/* From GnuTLS 3.0.20 */
-#undef HAVE_GNUTLS_DTLS_SET_DATA_MTU
-
-/* From GnuTLS 3.2.7 */
-#undef HAVE_GNUTLS_PKCS11_GET_RAW_ISSUER
-
-/* From GnuTLS 3.1.0 */
-#undef HAVE_GNUTLS_PKCS12_SIMPLE_PARSE
-
-/* From GnuTLS 3.1.0 */
-#undef HAVE_GNUTLS_PK_TO_SIGN
-
-/* From GnuTLS 3.1.3 */
-#undef HAVE_GNUTLS_PUBKEY_EXPORT2
-
 /* From GnuTLS 3.4.0 */
 #undef HAVE_GNUTLS_SYSTEM_KEYS
-
-/* From GnuTLS 3.1.0 */
-#undef HAVE_GNUTLS_URL_IS_SUPPORTED
-
-/* From GnuTLS 3.1.0 */
-#undef HAVE_GNUTLS_X509_CRT_SET_PIN_FUNCTION
 
 /* Have GSSAPI support */
 #undef HAVE_GSSAPI
@@ -126,6 +102,9 @@
 /* Define to 1 if you have the <memory.h> header file. */
 #undef HAVE_MEMORY_H
 
+/* Have memset_s() function */
+#undef HAVE_MEMSET_S
+
 /* Have net/utun.h */
 #undef HAVE_NET_UTUN_H
 
@@ -167,6 +146,9 @@
 
 /* Have Trousers TSS library */
 #undef HAVE_TROUSERS
+
+/* TSS2 library */
+#undef HAVE_TSS2
 
 /* Define to 1 if you have the <unistd.h> header file. */
 #undef HAVE_UNISTD_H

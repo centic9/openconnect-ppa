@@ -1,4 +1,4 @@
-AC_INIT(openconnect, 7.08)
+AC_INIT(openconnect, 8.02)
 AC_CONFIG_HEADERS([config.h])
 
 PKG_PROG_PKG_CONFIG
@@ -57,6 +57,7 @@ case $host_os in
     # Win32 does have the SCard API
     system_pcsc_libs="-lwinscard"
     system_pcsc_cflags=
+    AC_CHECK_TOOL([WINDRES], [windres], [])
     ;;
  *darwin*)
     system_pcsc_libs="-Wl,-framework -Wl,PCSC"
@@ -76,10 +77,15 @@ AC_ARG_WITH([vpnc-script],
 	  [default location of vpnc-script helper])])
 
 if test "$with_vpnc_script" = "yes" || test "$with_vpnc_script" = ""; then
+   AC_MSG_CHECKING([for vpnc-script in standard locations])
    if test "$have_win" = "yes"; then
       with_vpnc_script=vpnc-script-win.js
    else
-      with_vpnc_script=/etc/vpnc/vpnc-script
+      for with_vpnc_script in /usr/local/share/vpnc-scripts/vpnc-script /usr/local/sbin/vpnc-script /usr/share/vpnc-scripts/vpnc-script /usr/sbin/vpnc-script /etc/vpnc/vpnc-script; do
+         if test -x "$with_vpnc_script"; then
+            break
+         fi
+      done
       if ! test -x "$with_vpnc_script"; then
 	 AC_MSG_ERROR([${with_vpnc_script} does not seem to be executable.]
  [OpenConnect will not function correctly without a vpnc-script.]
@@ -95,7 +101,9 @@ if test "$with_vpnc_script" = "yes" || test "$with_vpnc_script" = ""; then
  [build OpenConnect to use the script from this location, even though it is]
  [not present at the time you are building OpenConnect, pass the argument]
  ["--with-vpnc-script=${with_vpnc_script}"])
-     fi
+      else
+         AC_MSG_RESULT([${with_vpnc_script}])
+      fi
    fi
 elif test "$with_vpnc_script" = "no"; then
    AC_ERROR([You cannot disable vpnc-script.]
@@ -109,6 +117,16 @@ fi
 
 AC_DEFINE_UNQUOTED(DEFAULT_VPNCSCRIPT, "${with_vpnc_script}", [Default vpnc-script locatin])
 AC_SUBST(DEFAULT_VPNCSCRIPT, "${with_vpnc_script}")
+
+AC_CHECK_FUNC(memset_s,
+	      [AC_DEFINE(HAVE_MEMSET_S, 1, [Have memset_s() function])],
+	      [AC_CHECK_FUNC(explicit_memset,
+	                    [AC_DEFINE(HAVE_EXPLICIT_MEMSET, 1, [Have explicit_memset() function])],
+			    [AC_CHECK_FUNC(explicit_bzero,
+					   [AC_DEFINE(HAVE_EXPLICIT_BZERO, 1, [Have explicit_bzero() function])],
+					   [])
+			    ])
+	      ])
 
 AC_CHECK_FUNC(fdevname_r, [AC_DEFINE(HAVE_FDEVNAME_R, 1, [Have fdevname_r() function])], [])
 AC_CHECK_FUNC(statfs, [AC_DEFINE(HAVE_STATFS, 1, [Have statfs() function])], [])
@@ -279,18 +297,9 @@ fi
 
 # First, check if GnuTLS exists and is usable
 if test "$with_gnutls" = "yes" || test "$with_gnutls" = ""; then
-    PKG_CHECK_MODULES(GNUTLS, gnutls >= 2.12.16,
-       [if ! $PKG_CONFIG --atleast-version=2.12.16 gnutls; then
-	    AC_MSG_WARN([Your GnuTLS is too old. At least v2.12.16 is required])
-        elif test "$have_win" = "yes"; then
-	   AC_MSG_CHECKING([for broken GnuTLS Windows versions])
-	   if $PKG_CONFIG --atleast-version=3.2.0 gnutls &&
-	      ! $PKG_CONFIG --atleast-version=3.2.10 gnutls; then
-	       AC_MSG_RESULT([broken])
-	   else
-	       AC_MSG_RESULT([OK])
-	       ssl_library=GnuTLS
-	   fi
+    PKG_CHECK_MODULES(GNUTLS, gnutls,
+       [if ! $PKG_CONFIG --atleast-version=3.2.10 gnutls; then
+	    AC_MSG_WARN([Your GnuTLS is too old. At least v3.2.10 is required])
 	else
 	    ssl_library=GnuTLS
 	fi], [:])
@@ -333,12 +342,12 @@ if test "$ssl_library" = ""; then
     else
 	OPENSSL_CFLAGS="-I${with_openssl}/include ${OPENSSL_CFLAGS}"
 	if test -r "${with_openssl}/libssl.a" -a -r "${with_openssl}/libcrypto.a";  then
-	    OPENSSL_LIBS="${with_openssl}/libssl.a ${with_openssl}/libcrypto.a -ldl -lz"
+	    OPENSSL_LIBS="${with_openssl}/libssl.a ${with_openssl}/libcrypto.a -ldl -lz -pthread"
 	elif test -r "${with_openssl}/crypto/.libs/libcrypto.a" -a \
 		  -r "${with_openssl}/ssl/.libs/libssl.a"; then
-	    OPENSSL_LIBS="${with_openssl}/ssl/.libs/libssl.a ${with_openssl}/crypto/.libs/libcrypto.a -ldl -lz"
+	    OPENSSL_LIBS="${with_openssl}/ssl/.libs/libssl.a ${with_openssl}/crypto/.libs/libcrypto.a -ldl -lz -pthread"
 	else
-	    AC_ERROR([Could not found OpenSSL libraries]);
+	    AC_ERROR([Could not find OpenSSL libraries in ${with_openssl}]);
 	fi
 	AC_SUBST(OPENSSL_CFLAGS)
 	AC_SUBST(OPENSSL_LIBS)
@@ -358,6 +367,7 @@ if test -n "$default_gnutls_priority"; then
    AC_DEFINE_UNQUOTED([DEFAULT_PRIO], ["$default_gnutls_priority"], [The GnuTLS priority string])
 fi
 
+tss2lib=
 case "$ssl_library" in
     OpenSSL)
 	oldLIBS="${LIBS}"
@@ -459,64 +469,10 @@ case "$ssl_library" in
 	oldcflags="$CFLAGS"
 	LIBS="$LIBS $GNUTLS_LIBS"
 	CFLAGS="$CFLAGS $GNUTLS_CFLAGS"
-	AC_CHECK_FUNC(gnutls_dtls_set_data_mtu,
-		      [AC_DEFINE(HAVE_GNUTLS_DTLS_SET_DATA_MTU, 1, [From GnuTLS 3.0.20])], [])
-	AC_CHECK_FUNC(gnutls_pkcs11_get_raw_issuer,
-		      [AC_DEFINE(HAVE_GNUTLS_PKCS11_GET_RAW_ISSUER, 1, [From GnuTLS 3.2.7])], [])
-	AC_CHECK_FUNC(gnutls_certificate_set_x509_system_trust,
-		      [AC_DEFINE(HAVE_GNUTLS_CERTIFICATE_SET_X509_SYSTEM_TRUST, 1, [From GnuTLS 3.0.20])], [])
-	if test "$ac_cv_func_gnutls_certificate_set_x509_system_trust" != "yes"; then
-	    # We will need to tell GnuTLS the path to the system CA file.
-	    if test "$with_system_cafile" = "yes" || test "$with_system_cafile" = ""; then
-		unset with_system_cafile
-		AC_MSG_CHECKING([For location of system CA trust file])
-		for file in /etc/ssl/certs/ca-certificates.crt \
-				/etc/pki/tls/cert.pem \
-				/usr/local/share/certs/ca-root-nss.crt \
-				/etc/ssl/cert.pem \
-				/etc/ssl/ca-bundle.pem \
-			    ; do
-		    if grep 'BEGIN CERTIFICATE-----' $file >/dev/null 2>&1; then
-			with_system_cafile=${file}
-			break
-		    fi
-		done
-		AC_MSG_RESULT([${with_system_cafile-NOT FOUND}])
-	    elif test "$with_system_cafile" = "no"; then
-		AC_MSG_ERROR([You cannot disable the system CA certificate file.])
-	    fi
-	    if test "$with_system_cafile" = ""; then
-		AC_MSG_ERROR([Unable to find a standard system CA certificate file.]
-			     [Your GnuTLS requires a path to a CA certificate store. This is a file]
-			     [which contains a list of the Certificate Authorities which are trusted.]
-			     [Most distributions ship with this file in a standard location, but none]
-			     [the known standard locations exist on your system. You should provide a]
-			     [--with-system-cafile= argument to this configure script, giving the full]
-			     [path to a default CA certificate file for GnuTLS to use. Also, please]
-			     [send full details of your system, including 'uname -a' output and the]
-			     [location of the system CA certificate store on your system, to the]
-			     [openconnect-devel@lists.infradead.org mailing list.])
-	    fi
-	    AC_DEFINE_UNQUOTED([DEFAULT_SYSTEM_CAFILE], ["$with_system_cafile"], [Location of System CA trust file])
-	fi
-	AC_CHECK_FUNC(gnutls_cipher_set_iv,
-		      [esp=yes], [])
-	AC_CHECK_FUNC(gnutls_pkcs12_simple_parse,
-		      [AC_DEFINE(HAVE_GNUTLS_PKCS12_SIMPLE_PARSE, 1, [From GnuTLS 3.1.0])], [])
-	AC_CHECK_FUNC(gnutls_certificate_set_key,
-		      [AC_DEFINE(HAVE_GNUTLS_CERTIFICATE_SET_KEY, 1, [From GnuTLS 3.0.4])], [])
-	AC_CHECK_FUNC(gnutls_pk_to_sign,
-		      [AC_DEFINE(HAVE_GNUTLS_PK_TO_SIGN, 1, [From GnuTLS 3.1.0])], [])
-	AC_CHECK_FUNC(gnutls_pubkey_export2,
-		      [AC_DEFINE(HAVE_GNUTLS_PUBKEY_EXPORT2, 1, [From GnuTLS 3.1.3])], [])
-	AC_CHECK_FUNC(gnutls_x509_crt_set_pin_function,
-		      [AC_DEFINE(HAVE_GNUTLS_X509_CRT_SET_PIN_FUNCTION, 1, [From GnuTLS 3.1.0])], [])
-	AC_CHECK_FUNC(gnutls_url_is_supported,
-		      [AC_DEFINE(HAVE_GNUTLS_URL_IS_SUPPORTED, 1, [From GnuTLS 3.1.0])], [])
+	esp=yes
+	dtls=yes
 	AC_CHECK_FUNC(gnutls_system_key_add_x509,
 		      [AC_DEFINE(HAVE_GNUTLS_SYSTEM_KEYS, 1, [From GnuTLS 3.4.0])], [])
-	AC_CHECK_FUNC(gnutls_session_set_premaster,
-		      [dtls=yes], [])
 	AC_CHECK_FUNC(gnutls_pkcs11_add_provider,
 		      [PKG_CHECK_MODULES(P11KIT, p11-kit-1,
 					 [AC_DEFINE(HAVE_P11KIT, 1, [Have. P11. Kit.])
@@ -538,10 +494,34 @@ case "$ssl_library" in
 	LIBS="$oldlibs"
 	CFLAGS="$oldcflags"
 
+	PKG_CHECK_MODULES(TASN1, [libtasn1], [have_tasn1=yes], [have_tasn1=no])
+	if test "$have_tasn1" = "yes"; then
+	   PKG_CHECK_MODULES(TSS2_ESYS, [tss2-esys],
+			     [AC_DEFINE(HAVE_TSS2, 1, [Have TSS2])
+			      AC_SUBST(TPM2_CFLAGS, ['$(TASN1_CFLAGS) $(TSS2_ESYS_CFLAGS)'])
+			      AC_SUBST(TPM2_LIBS, ['$(TASN1_LIBS) $(TSS2_ESYS_LIBS)'])
+			      tss2lib=tss2-esys],
+			     [:])
+	   if test "$tss2lib" = ""; then
+	       AC_CHECK_LIB([tss], [TSS_Create], [tss2inc=tss2
+						  tss2lib=tss],
+			    AC_CHECK_LIB([ibmtss], [TSS_Create], [tss2inc=ibmtss
+								  tss2lib=ibmtss], []))
+	       if test "$tss2lib" != ""; then
+		   AC_CHECK_HEADER($tss2inc/tss.h,
+				   [AC_DEFINE_UNQUOTED(HAVE_TSS2, $tss2inc, [TSS2 library])
+				    AC_SUBST(TSS2_LIBS, [-l$tss2lib])
+				    AC_SUBST(TPM2_CFLAGS, ['$(TASN1_CFLAGS)'])
+				    AC_SUBST(TPM2_LIBS, ['$(TASN1_LIBS) $(TSS2_LIBS)'])],
+				   [tss2lib=])
+	       fi
+	   fi
+	fi
+
 	AC_DEFINE(OPENCONNECT_GNUTLS, 1, [Using GnuTLS])
 	AC_SUBST(SSL_PC, [gnutls])
-	AC_SUBST(SSL_LIBS, ['$(GNUTLS_LIBS)'])
-	AC_SUBST(SSL_CFLAGS, ['$(GNUTLS_CFLAGS)'])
+	AC_SUBST(SSL_LIBS, ['$(GNUTLS_LIBS) $(TPM2_LIBS)'])
+	AC_SUBST(SSL_CFLAGS, ['$(GNUTLS_CFLAGS) $(TPM2_CFLAGS)'])
 	;;
 
     *)
@@ -549,6 +529,9 @@ case "$ssl_library" in
 	AC_MSG_ERROR([No SSL library selected])
 	;;
 esac
+
+AM_CONDITIONAL(OPENCONNECT_TSS2_ESYS, [ test "$tss2lib" = "tss2-esys" ])
+AM_CONDITIONAL(OPENCONNECT_TSS2_IBM, [ test "$tss2lib" = "ibmtss" -o "$tss2lib" = "tss" ])
 
 test_pkcs11=
 if test "$pkcs11_support" != ""; then
@@ -985,6 +968,22 @@ AM_CONDITIONAL(BUILD_WWW, [test "${build_www}" = "yes"])
 PKG_CHECK_MODULES([CWRAP], [uid_wrapper, socket_wrapper], have_cwrap=yes, have_cwrap=no)
 AM_CONDITIONAL(HAVE_CWRAP, test "x$have_cwrap" != xno)
 
+have_netns=no
+AC_PATH_PROG(NUTTCP, nuttcp)
+if test -n "$ac_cv_path_NUTTCP"; then
+    AC_PATH_PROG(IP, ip, [], $PATH:/sbin:/usr/sbin)
+    if test -n "$ac_cv_path_IP"; then
+	AC_MSG_CHECKING([For network namespaces])
+	NETNS=openconnect-configure-test-$$
+	if ip netns add $NETNS >/dev/null 2>/dev/null; then
+	    ip netns delete $NETNS
+	    have_netns=yes
+	fi
+	AC_MSG_RESULT($have_netns)
+    fi
+fi
+AM_CONDITIONAL(HAVE_NETNS, test "x$have_netns" != xno)
+
 AC_SUBST([CONFIG_STATUS_DEPENDENCIES],
 	 ['$(top_srcdir)/po/LINGUAS \
 	   $(top_srcdir)/openconnect.h \
@@ -1052,6 +1051,7 @@ SUMMARY([LZ4 compression], [$lz4_pkg])
 SUMMARY([Java bindings], [$with_java])
 SUMMARY([Build docs], [$build_www])
 SUMMARY([Unit tests], [$have_cwrap])
+SUMMARY([Net namespace tests], [$have_netns])
 
 if test "$ssl_library" = "OpenSSL"; then
     AC_MSG_WARN([[
