@@ -1,3 +1,9 @@
+openconnect (8.02-1ubuntu0~ppa1) bionic; urgency=medium
+
+  * Backport to bionic
+
+ -- Dominik Stadler (Ubuntu key) <dominik.stadler@gmx.at>  Sat, 23 Mar 2019 06:55:56 +0100
+
 openconnect (8.02-1) unstable; urgency=medium
 
   [ Mike Miller ]
