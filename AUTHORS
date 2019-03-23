@@ -1,12 +1,69 @@
-David Woodhouse <David.Woodhouse@intel.com>
-
-Nick Andrew <nick@nick-andrew.net>
-Antonio Borneo <borneo.antonio@gmail.com>
-Ross Burton <ross@openedhand.com>
-Dirk Hohndel <dirk.hohndel@intel.com>
-Marcel Holtmann <marcel@holtmann.org>
-Jussi Kukkonen <jku@linux.intel.com>
-Adam Piątyszek <ediap@users.sourceforge.net>
-Thomas Wood <thomas.wood@intel.com>
-Fengguang Wu <fengguang.wu@intel.com>
-
+  2353	David Woodhouse <dwmw2@infradead.org>
+   273	Kevin Cernekee <cernekee@gmail.com>
+    86	Nikos Mavrogiannopoulos <nmav@gnutls.org>
+    75	Daniel Lenski <dlenski@gmail.com>
+    24	Jussi Kukkonen <jku@linux.intel.com>
+    17	Adam Piątyszek <ediap@users.sourceforge.net>
+    17	Antonio Borneo <borneo.antonio@gmail.com>
+    11	Nick Andrew <nick@nick-andrew.net>
+     7	Mike Miller <mtmiller@ieee.org>
+     6	Erik Mouw <mouw@nl.linux.org>
+     6	Mike Miller <mtmiller@debian.org>
+     4	Fengguang Wu <fengguang.wu@intel.com>
+     4	Nikolay Martynov <mar.kolya@gmail.com>
+     3	Dirk Hohndel <dirk.hohndel@intel.com>
+     3	Stuart Henderson <stu@spacehopper.org>
+     3	Ľubomír Carik <Lubomir.Carik@gmail.com>
+     2	Björn Ketelaars <bjorn.ketelaars@hydroxide.nl>
+     2	David Dindorp <david.ocon@dindorp.dk>
+     2	Jason Cooper <cyanogen@lakedaemon.net>
+     2	Jay Soffian <jaysoffian@gmail.com>
+     2	Jeremy Visser <jeremy@visser.name>
+     2	John Morrissey <jwm@horde.net>
+     2	Jon DeVree <nuxi@vault24.org>
+     2	Kazuyoshi Aizawa <admin2@whiteboard.ne.jp>
+     2	Marcel Holtmann <marcel@holtmann.org>
+     2	Piotr Kubaj <pkubaj@anongoth.pl>
+     2	Ralph Schmieder <ralph.schmieder@gmail.com>
+     2	Ray Kohler <ataraxia937@gmail.com>
+     1	Cameron Eagans <me@cweagans.net>
+     1	Chad Catlett <chad@catlett.info>
+     1	Chaskiel Grundman <cg2v@andrew.cmu.edu>
+     1	David GEIGER <geiger.david68210@gmail.com>
+     1	Dominic Hargreaves <dom@earth.li>
+     1	Dominique Leuenberger <dimstar@opensuse.org>
+     1	Eric Barkie <eric@barkie.net>
+     1	Fabian Jäger <fabian.jaeger@chungwasoft.com>
+     1	François Grenier <francois@pacof.net>
+     1	Ilia Kats <ilia-kats@gmx.net>
+     1	James Laird-Wah <james@laird-wah.net>
+     1	Janne Juntunen <janne.juntunen@hermanit.fi>
+     1	Jason Cooper <openconnect@lakedaemon.net>
+     1	Jason Wessel <jason.wessel@windriver.com>
+     1	Jiří Klimeš <jklimes@redhat.com>
+     1	Joe Hu <i@sapika.ch>
+     1	Joerg Mayer <jmayer@loplof.de>
+     1	Jørgen Wahlberg <jorgen@wahlberg.no>
+     1	Katelyn Schiesser <katelyn.schiesser@gmail.com>
+     1	Keith Moyer <openconnect-devel@keithmoyer.com>
+     1	Kyle Johnson <kyle@powerworld.com>
+     1	Mathias Schuepany <mathias.schuepany@catalysts.cc>
+     1	Michael Zhilin <zhilin@netcracker.com>
+     1	Murilo Opsfelder Araujo <muriloo@linux.vnet.ibm.com>
+     1	Nick Parrin <spam@coreworks.be>
+     1	Nikolay Panin <nick_panin@mail.ru>
+     1	Paul Brook <paul@codesourcery.com>
+     1	Paul Donohue <git@PaulSD.com>
+     1	Pouya D. Tafti <p@san-serriffe.org>
+     1	Ross Burton <ross@openedhand.com>
+     1	Stefan Becker <chemobejk@gmail.com>
+     1	Steven Allen <steven@stebalien.com>
+     1	Steven Ihde <steve@x2.hamachi.us>
+     1	Stuart Henderson <sthen@openbsd.org>
+     1	Svante Signell <svante.signell@telia.com>
+     1	Thomas Schwinge <thomas@codesourcery.com>
+     1	Thomas Uhle <thomas.uhle@mailbox.tu-dresden.de>
+     1	Thomas Wood <thomas.wood@intel.com>
+     1	Thorsten Bonhagen <Thorsten.Bonhagen@tbon.de>
+     1	Tiago Vignatti <tiago.vignatti@intel.com>
+     1	Youfu Zhang <zhangyoufu@gmail.com>

@@ -54,6 +54,19 @@ void buf_append_urlencoded(struct oc_text_buf *buf, const char *str)
 	}
 }
 
+void buf_append_xmlescaped(struct oc_text_buf *buf, const char *str)
+{
+	while (str && *str) {
+		unsigned char c = *str;
+		if (c=='<' || c=='>' || c=='&' || c=='"' || c=='\'')
+			buf_append(buf, "&#x%02x;", c);
+		else
+			buf_append_bytes(buf, str, 1);
+
+		str++;
+	}
+}
+
 void buf_append_hex(struct oc_text_buf *buf, const void *str, unsigned len)
 {
 	const unsigned char *data = str;
@@ -68,9 +81,10 @@ void buf_truncate(struct oc_text_buf *buf)
 	if (!buf)
 		return;
 
-	buf->pos = 0;
 	if (buf->data)
-		buf->data[0] = 0;
+		memset(buf->data, 0, buf->pos);
+
+	buf->pos = 0;
 }
 
 int buf_ensure_space(struct oc_text_buf *buf, int len)
@@ -277,6 +291,7 @@ int buf_free(struct oc_text_buf *buf)
 	int error = buf_error(buf);
 
 	if (buf) {
+		buf_truncate(buf);
 		if (buf->data)
 			free(buf->data);
 		free(buf);
@@ -781,6 +796,22 @@ void dump_buf(struct openconnect_info *vpninfo, char prefix, char *buf)
 	}
 }
 
+void dump_buf_hex(struct openconnect_info *vpninfo, int loglevel, char prefix, unsigned char *buf, int len)
+{
+	char linebuf[80];
+	int i;
+
+	for (i = 0; i < len; i++) {
+		if (i % 16 == 0) {
+			if (i)
+				vpn_progress(vpninfo, loglevel, "%c %s\n", prefix, linebuf);
+			sprintf(linebuf, "%04x:", i);
+		}
+		sprintf(linebuf + strlen(linebuf), " %02x", buf[i]);
+	}
+	vpn_progress(vpninfo, loglevel, "%c %s\n", prefix, linebuf);
+}
+
 /* Inputs:
  *  method:             GET or POST
  *  vpninfo->hostname:  Host DNS name
@@ -802,7 +833,7 @@ int do_https_request(struct openconnect_info *vpninfo, const char *method,
 	int result;
 	int rq_retry;
 	int rlen, pad;
-	int auth = 0;
+	int i, auth = 0;
 	int max_redirects = 10;
 
 	if (request_body_type && buf_error(request_body))
@@ -897,17 +928,22 @@ int do_https_request(struct openconnect_info *vpninfo, const char *method,
 	if (vpninfo->dump_http_traffic)
 		dump_buf(vpninfo, '>', buf->data);
 
-	result = vpninfo->ssl_write(vpninfo, buf->data, buf->pos);
-	if (rq_retry && result < 0) {
-		openconnect_close_https(vpninfo, 0);
-		goto retry;
+	for (i = 0; i < buf->pos; i += 16384) {
+		result = vpninfo->ssl_write(vpninfo, buf->data + i, MIN(buf->pos - i, 16384) );
+		if (result < 0) {
+			if (rq_retry) {
+				/* Retry if we failed to send the request on
+				   an already-open connection */
+				openconnect_close_https(vpninfo, 0);
+				goto retry;
+			}
+			/* We'll already have complained about whatever offended us */
+			goto out;
+		}
 	}
-	if (result < 0)
-		goto out;
 
 	result = process_http_response(vpninfo, 0, http_auth_hdrs, buf);
 	if (result < 0) {
-		/* We'll already have complained about whatever offended us */
 		goto out;
 	}
 	if (vpninfo->dump_http_traffic && buf->pos)
@@ -937,7 +973,12 @@ int do_https_request(struct openconnect_info *vpninfo, const char *method,
 		vpn_progress(vpninfo, PRG_ERR,
 			     _("Unexpected %d result from server\n"),
 			     result);
-		result = -EINVAL;
+		if (result == 401 || result == 403)
+			result = -EPERM;
+		else if (result == 512) /* GlobalProtect invalid username/password */
+			result = -EACCES;
+		else
+			result = -EINVAL;
 		goto out;
 	}
 
@@ -964,101 +1005,17 @@ char *openconnect_create_useragent(const char *base)
 
 static int proxy_gets(struct openconnect_info *vpninfo, char *buf, size_t len)
 {
-	int i = 0;
-	int ret;
-
-	if (len < 2)
-		return -EINVAL;
-
-	while ((ret = proxy_read(vpninfo, (void *)(buf + i), 1)) == 1) {
-		if (buf[i] == '\n') {
-			buf[i] = 0;
-			if (i && buf[i-1] == '\r') {
-				buf[i-1] = 0;
-				i--;
-			}
-			return i;
-		}
-		i++;
-
-		if (i >= len - 1) {
-			buf[i] = 0;
-			return i;
-		}
-	}
-	buf[i] = 0;
-	return i ?: ret;
+	return cancellable_gets(vpninfo, vpninfo->proxy_fd, buf, len);
 }
 
 static int proxy_write(struct openconnect_info *vpninfo, char *buf, size_t len)
 {
-	size_t count;
-	int fd = vpninfo->proxy_fd;
-
-	if (fd == -1)
-		return -EINVAL;
-
-	for (count = 0; count < len; ) {
-		fd_set rd_set, wr_set;
-		int maxfd = fd;
-		int i;
-
-		FD_ZERO(&wr_set);
-		FD_ZERO(&rd_set);
-		FD_SET(fd, &wr_set);
-		cmd_fd_set(vpninfo, &rd_set, &maxfd);
-
-		select(maxfd + 1, &rd_set, &wr_set, NULL, NULL);
-		if (is_cancel_pending(vpninfo, &rd_set))
-			return -EINTR;
-
-		/* Not that this should ever be able to happen... */
-		if (!FD_ISSET(fd, &wr_set))
-			continue;
-
-		i = send(fd, (void *)&buf[count], len - count, 0);
-		if (i < 0)
-			return -errno;
-
-		count += i;
-	}
-	return count;
+	return cancellable_send(vpninfo, vpninfo->proxy_fd, buf, len);
 }
 
 static int proxy_read(struct openconnect_info *vpninfo, char *buf, size_t len)
 {
-	size_t count;
-	int fd = vpninfo->proxy_fd;
-
-	if (fd == -1)
-		return -EINVAL;
-
-	for (count = 0; count < len; ) {
-		fd_set rd_set;
-		int maxfd = fd;
-		int i;
-
-		FD_ZERO(&rd_set);
-		FD_SET(fd, &rd_set);
-		cmd_fd_set(vpninfo, &rd_set, &maxfd);
-
-		select(maxfd + 1, &rd_set, NULL, NULL, NULL);
-		if (is_cancel_pending(vpninfo, &rd_set))
-			return -EINTR;
-
-		/* Not that this should ever be able to happen... */
-		if (!FD_ISSET(fd, &rd_set))
-			continue;
-
-		i = recv(fd, (void *)&buf[count], len - count, 0);
-		if (i < 0)
-			return -errno;
-		else if (i == 0)
-			return -ECONNRESET;
-
-		count += i;
-	}
-	return count;
+	return cancellable_recv(vpninfo, vpninfo->proxy_fd, buf, len);
 }
 
 static const char *socks_errors[] = {

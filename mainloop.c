@@ -51,8 +51,10 @@ int tun_mainloop(struct openconnect_info *vpninfo, int *timeout)
 	int work_done = 0;
 
 	if (!tun_is_up(vpninfo)) {
-		/* no tun yet, clear any queued packets */
-		while ((this = dequeue_packet(&vpninfo->incoming_queue)));
+		/* no tun yet; clear any queued packets */
+		while ((this = dequeue_packet(&vpninfo->incoming_queue)))
+			free(this);
+
 		return 0;
 	}
 
@@ -256,7 +258,6 @@ int openconnect_mainloop(struct openconnect_info *vpninfo,
 			openconnect_close_https(vpninfo, 0);
 			if (vpninfo->dtls_state > DTLS_DISABLED) {
 				vpninfo->proto->udp_close(vpninfo);
-				vpninfo->dtls_state = DTLS_SLEEPING;
 				vpninfo->new_dtls_started = 0;
 			}
 
@@ -314,7 +315,7 @@ int openconnect_mainloop(struct openconnect_info *vpninfo,
 	return ret < 0 ? ret : -EIO;
 }
 
-static int ka_check_deadline(int *timeout, time_t now, time_t due)
+int ka_check_deadline(int *timeout, time_t now, time_t due)
 {
 	if (now >= due)
 		return 1;
