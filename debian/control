@@ -1,5 +1,6 @@
 Source: openconnect
 Maintainer: Mike Miller <mtmiller@debian.org>
+Uploaders: Luca Boccassi <bluca@debian.org>
 Section: net
 Priority: optional
 Build-Depends: debhelper-compat (= 12),
@@ -22,13 +23,14 @@ Build-Depends: debhelper-compat (= 12),
                ocserv (>= 0.12.1-2) [!hurd-i386 !kfreebsd-amd64 !kfreebsd-i386] <!nocheck>,
                openssl <!nocheck>,
                pkg-config,
-               python,
+               python3,
                softhsm2 [!hurd-i386] <!nocheck>,
                zlib1g-dev
-Standards-Version: 4.3.0
+Standards-Version: 4.5.0
+Rules-Requires-Root: no
 Vcs-Browser: https://salsa.debian.org/debian/openconnect
 Vcs-Git: https://salsa.debian.org/debian/openconnect.git
-Homepage: http://www.infradead.org/openconnect/
+Homepage: https://www.infradead.org/openconnect/
 
 Package: openconnect
 Architecture: any

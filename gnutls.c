@@ -1082,6 +1082,7 @@ static int load_certificate(struct openconnect_info *vpninfo)
 		vpn_progress(vpninfo, PRG_ERR,
 			     _("Loading certificate failed: %s\n"),
 			     reason);
+		nr_extra_certs = 0;
 		ret = -EINVAL;
 		goto out;
 	}
@@ -2189,7 +2190,7 @@ int openconnect_open_https(struct openconnect_info *vpninfo)
 	 *
 	 * See comments above regarding COMPAT and DUMBFW.
 	 */
-	if (gtls_ver(3,2,9) && string_is_hostname(vpninfo->hostname))
+	if (string_is_hostname(vpninfo->hostname))
 		gnutls_server_name_set(vpninfo->https_sess, GNUTLS_NAME_DNS,
 				       vpninfo->hostname,
 				       strlen(vpninfo->hostname));
@@ -2221,16 +2222,10 @@ int openconnect_open_https(struct openconnect_info *vpninfo)
 #ifdef DEFAULT_PRIO
 	default_prio = DEFAULT_PRIO ":%COMPAT";
 #else
-	if (gtls_ver(3,2,9)) {
-		default_prio = "NORMAL:-VERS-SSL3.0:%COMPAT";
-	} else if (gtls_ver(3,0,0)) {
-		default_prio = "NORMAL:-VERS-TLS-ALL:+VERS-TLS1.0:" \
-			"%COMPAT:%DISABLE_SAFE_RENEGOTIATION:%LATEST_RECORD_VERSION" \
-			":-CURVE-ALL:-ECDHE-RSA:-ECDHE-ECDSA";
-	} else {
-		default_prio = "NORMAL:-VERS-TLS-ALL:+VERS-TLS1.0:"			\
-			"%COMPAT:%DISABLE_SAFE_RENEGOTIATION:%LATEST_RECORD_VERSION";
-	}
+	/* GnuTLS 3.5.19 and onward refuse to negotiate AES-CBC-HMAC-SHA256
+	 * by default but some Cisco servers can't do anything better, so
+	 * explicitly add '+SHA256' to allow it. Yay Cisco. */
+	default_prio = "NORMAL:-VERS-SSL3.0:+SHA256:%COMPAT";
 #endif
 
 	snprintf(vpninfo->gnutls_prio, sizeof(vpninfo->gnutls_prio), "%s%s%s",
@@ -2602,4 +2597,64 @@ int hotp_hmac(struct openconnect_info *vpninfo, const void *challenge)
 
 	hpos = hash[hpos] & 15;
 	return load_be32(&hash[hpos]) & 0x7fffffff;
+}
+
+
+static int ttls_pull_timeout_func(gnutls_transport_ptr_t t, unsigned int ms)
+{
+	struct openconnect_info *vpninfo = t;
+
+	vpn_progress(vpninfo, PRG_TRACE, _("ttls_pull_timeout_func %dms\n"), ms);
+	return 0;
+}
+
+static ssize_t ttls_pull_func(gnutls_transport_ptr_t t, void *buf, size_t len)
+{
+	int ret = pulse_eap_ttls_recv(t, buf, len);
+	if (ret >= 0)
+		return ret;
+	else
+		return GNUTLS_E_PULL_ERROR;
+}
+
+static ssize_t ttls_push_func(gnutls_transport_ptr_t t, const void *buf, size_t len)
+{
+	int ret = pulse_eap_ttls_send(t, buf, len);
+	if (ret >= 0)
+		return ret;
+	else
+		return GNUTLS_E_PUSH_ERROR;
+}
+
+void *establish_eap_ttls(struct openconnect_info *vpninfo)
+{
+	gnutls_session_t ttls_sess = NULL;
+	int err;
+
+	gnutls_init(&ttls_sess, GNUTLS_CLIENT);
+	gnutls_session_set_ptr(ttls_sess, (void *) vpninfo);
+	gnutls_transport_set_ptr(ttls_sess, (void *) vpninfo);
+
+	gnutls_transport_set_push_function(ttls_sess, ttls_push_func);
+	gnutls_transport_set_pull_function(ttls_sess, ttls_pull_func);
+	gnutls_transport_set_pull_timeout_function(ttls_sess, ttls_pull_timeout_func);
+
+	gnutls_credentials_set(ttls_sess, GNUTLS_CRD_CERTIFICATE, vpninfo->https_cred);
+
+	err = gnutls_priority_set_direct(ttls_sess,
+				   vpninfo->gnutls_prio, NULL);
+
+	err = gnutls_handshake(ttls_sess);
+	if (!err) {
+		vpn_progress(vpninfo, PRG_TRACE,
+			     _("Established EAP-TTLS session\n"));
+		return ttls_sess;
+	}
+	gnutls_deinit(ttls_sess);
+	return NULL;
+}
+
+void destroy_eap_ttls(struct openconnect_info *vpninfo, void *sess)
+{
+	gnutls_deinit(sess);
 }

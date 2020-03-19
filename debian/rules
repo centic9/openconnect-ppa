@@ -25,9 +25,5 @@ override_dh_installchangelogs:
 override_dh_compress:
 	dh_compress -Xhtml/changelog.html
 
-override_dh_strip:
-	dh_strip -plibopenconnect5 --dbgsym-migration='libopenconnect5-dbg (<< 7.08-2~)'
-	dh_strip -popenconnect --dbgsym-migration='openconnect-dbg (<< 7.08-2~)'
-
 override_dh_autoreconf:
 	dh_autoreconf --as-needed

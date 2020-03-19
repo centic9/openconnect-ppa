@@ -34,12 +34,28 @@ void gpst_common_headers(struct openconnect_info *vpninfo,
 			 struct oc_text_buf *buf)
 {
 	char *orig_ua = vpninfo->useragent;
+
+	/* XX: more recent servers don't appear to require this specific UA value,
+	 * but we don't have any good way to detect them.
+	 */
 	vpninfo->useragent = (char *)"PAN GlobalProtect";
-
 	http_common_headers(vpninfo, buf);
-
 	vpninfo->useragent = orig_ua;
 }
+
+/* Translate platform names (derived from AnyConnect) into the values
+ * known to be emitted by GlobalProtect clients.
+ */
+const char *gpst_os_name(struct openconnect_info *vpninfo)
+{
+	if (!strcmp(vpninfo->platname, "mac-intel") || !strcmp(vpninfo->platname, "apple-ios"))
+		return "Mac";
+	else if (!strcmp(vpninfo->platname, "linux-64") || !strcmp(vpninfo->platname, "linux") || !strcmp(vpninfo->platname, "android"))
+		return "Linux";
+	else
+		return "Windows";
+}
+
 
 /* Parse pre-login response ({POST,GET} /{global-protect,ssl-vpn}/pre-login.esp)
  *
@@ -447,18 +463,10 @@ static int gpst_login(struct openconnect_info *vpninfo, int portal, struct login
 
 	/* Ask the user to fill in the auth form; repeat as necessary */
 	for (;;) {
-		const char *clientos;
-		if (!strcmp(vpninfo->platname, "mac-intel") || !strcmp(vpninfo->platname, "apple-ios"))
-			clientos = "Mac";
-		else if (!strcmp(vpninfo->platname, "linux-64") || !strcmp(vpninfo->platname, "android"))
-			clientos = "Linux";
-		else
-			clientos = "Windows";
-
 		/* submit prelogin request to get form */
 		orig_path = vpninfo->urlpath;
 		if (asprintf(&vpninfo->urlpath, "%s/prelogin.esp?tmp=tmp&clientVer=4100&clientos=%s",
-			     portal ? "global-protect" : "ssl-vpn", clientos) < 0) {
+			     portal ? "global-protect" : "ssl-vpn", gpst_os_name(vpninfo)) < 0) {
 			result = -ENOMEM;
 			goto out;
 		}
@@ -489,12 +497,8 @@ static int gpst_login(struct openconnect_info *vpninfo, int portal, struct login
 		/* submit gateway login (ssl-vpn/login.esp) or portal config (global-protect/getconfig.esp) request */
 		buf_truncate(request_body);
 		buf_append(request_body, "jnlpReady=jnlpReady&ok=Login&direct=yes&clientVer=4100&prot=https:");
-		if (!strcmp(vpninfo->platname, "mac-intel") || !strcmp(vpninfo->platname, "apple-ios"))
-			append_opt(request_body, "clientos", "Mac");
-		else if (!strcmp(vpninfo->platname, "linux-64") || !strcmp(vpninfo->platname, "android"))
-			append_opt(request_body, "clientos", "Linux");
-		else
-			append_opt(request_body, "clientos", "Windows");
+		append_opt(request_body, "ipv6-support", vpninfo->disable_ipv6 ? "no" : "yes");
+		append_opt(request_body, "clientos", gpst_os_name(vpninfo));
 		append_opt(request_body, "os-version", vpninfo->platname);
 		append_opt(request_body, "server", vpninfo->hostname);
 		append_opt(request_body, "computer", vpninfo->localname);

@@ -1,3 +1,32 @@
+openconnect (8.05-1) unstable; urgency=medium
+
+  [ Debian Janitor ]
+  * Use secure URI in Homepage field.
+  * Update standards version to 4.4.1, no changes needed.
+
+  [ Luca Boccassi ]
+  * Update upstream source from tag 'upstream/8.05' (Closes: #935198)
+  * Drop patches, merged upstream in v8.05
+  * Build-depend on Python3, v8.05 can build documentation with it now
+    (Closes: #937197)
+  * Set Rules-Requires-Root: no
+  * Bump Standards-Version to 4.5.0, no changes
+  * Add myself to Uploaders
+  * Addn Lintian override for hipreport-android.sh
+  * Drop rules for dbgsym migration
+  * Add libopenconnect.la to d/not-installed
+
+ -- Luca Boccassi <bluca@debian.org>  Thu, 19 Mar 2020 19:13:13 +0000
+
+openconnect (8.02-1.1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Close HTTPS connection on failure returns from process_http_response()
+  * Fix buffer overflow with chunked HTTP handling (CVE-2019-16239)
+    (Closes: #940871)
+
+ -- Salvatore Bonaccorso <carnil@debian.org>  Sat, 18 Jan 2020 23:37:24 +0100
+
 openconnect (8.02-1) unstable; urgency=medium
 
   [ Mike Miller ]

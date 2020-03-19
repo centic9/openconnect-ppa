@@ -1879,10 +1879,12 @@ int openconnect_init_ssl(void)
 	if (ret)
 		return ret;
 #endif
+#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
 	SSL_library_init();
 	ERR_clear_error();
 	SSL_load_error_strings();
 	OpenSSL_add_all_algorithms();
+#endif
 	return 0;
 }
 
@@ -1977,4 +1979,122 @@ int hotp_hmac(struct openconnect_info *vpninfo, const void *challenge)
 
 	hashlen = hash[hashlen - 1] & 15;
 	return load_be32(&hash[hashlen]) & 0x7fffffff;
+}
+
+static long ttls_ctrl_func(BIO *b, int cmd, long larg, void *iarg);
+static int ttls_pull_func(BIO *b, char *buf, int len);
+static int ttls_push_func(BIO *b, const char *buf, int len);
+
+#ifdef HAVE_BIO_METH_FREE
+static BIO_METHOD *eap_ttls_method(void)
+{
+	BIO_METHOD *meth = BIO_meth_new(BIO_get_new_index(), "EAP-TTLS");
+
+	BIO_meth_set_write(meth, ttls_push_func);
+	BIO_meth_set_read(meth, ttls_pull_func);
+	BIO_meth_set_ctrl(meth, ttls_ctrl_func);
+	return meth;
+}
+#else /* !HAVE_BIO_METH_FREE */
+#define BIO_TYPE_EAP_TTLS 0x80
+
+static BIO_METHOD ttls_bio_meth = {
+	.type = BIO_TYPE_EAP_TTLS,
+	.name = "EAP-TTLS",
+	.bwrite = ttls_push_func,
+	.bread = ttls_pull_func,
+	.ctrl = ttls_ctrl_func,
+};
+static BIO_METHOD *eap_ttls_method(void)
+{
+	return &ttls_bio_meth;
+}
+
+static inline void BIO_set_data(BIO *b, void *p)
+{
+	b->ptr = p;
+}
+
+static inline void *BIO_get_data(BIO *b)
+{
+	return b->ptr;
+}
+
+static void BIO_set_init(BIO *b, int i)
+{
+	b->init = i;
+}
+#endif /* !HAVE_BIO_METH_FREE */
+
+static int ttls_push_func(BIO *b, const char *buf, int len)
+{
+	struct openconnect_info *vpninfo = BIO_get_data(b);
+	int ret = pulse_eap_ttls_send(vpninfo, buf, len);
+	if (ret >= 0)
+		return ret;
+
+	return 0;
+}
+
+static int ttls_pull_func(BIO *b, char *buf, int len)
+{
+	struct openconnect_info *vpninfo = BIO_get_data(b);
+	int ret = pulse_eap_ttls_recv(vpninfo, buf, len);
+	if (ret >= 0)
+		return ret;
+
+	return 0;
+}
+
+static long ttls_ctrl_func(BIO *b, int cmd, long larg, void *iarg)
+{
+	switch(cmd) {
+	case BIO_CTRL_FLUSH:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
+void *establish_eap_ttls(struct openconnect_info *vpninfo)
+{
+	SSL *ttls_ssl = NULL;
+	BIO *bio;
+	int err;
+
+	if (!vpninfo->ttls_bio_meth)
+		vpninfo->ttls_bio_meth = eap_ttls_method();
+
+	bio = BIO_new(vpninfo->ttls_bio_meth);
+	BIO_set_data(bio, vpninfo);
+	BIO_set_init(bio, 1);
+	ttls_ssl = SSL_new(vpninfo->https_ctx);
+	workaround_openssl_certchain_bug(vpninfo, ttls_ssl);
+
+	SSL_set_bio(ttls_ssl, bio, bio);
+
+	SSL_set_verify(ttls_ssl, SSL_VERIFY_PEER, NULL);
+
+	vpn_progress(vpninfo, PRG_INFO, _("EAP-TTLS negotiation with %s\n"),
+		     vpninfo->hostname);
+
+	err = SSL_connect(ttls_ssl);
+	if (err == 1) {
+		vpn_progress(vpninfo, PRG_TRACE,
+			     _("Established EAP-TTLS session\n"));
+		return ttls_ssl;
+	}
+
+	err = SSL_get_error(ttls_ssl, err);
+	vpn_progress(vpninfo, PRG_ERR, _("EAP-TTLS connection failure %d\n"), err);
+	openconnect_report_ssl_errors(vpninfo);
+	SSL_free(ttls_ssl);
+	return NULL;
+}
+
+void destroy_eap_ttls(struct openconnect_info *vpninfo, void *ttls)
+{
+	SSL_free(ttls);
+	/* Leave the BIO_METH for now. It may get reused and we don't want to
+	 * have to call BIO_get_new_index() more times than is necessary */
 }

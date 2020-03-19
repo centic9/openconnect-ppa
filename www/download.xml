@@ -17,25 +17,16 @@
 
 <p>
 <!-- latest-release-start -->
-The latest release is <a href="ftp://ftp.infradead.org/pub/openconnect/openconnect-8.02.tar.gz">OpenConnect v8.02</a>
-<i>(<a href="ftp://ftp.infradead.org/pub/openconnect/openconnect-8.02.tar.gz.asc">PGP signature</a>)</i>,
-released on 2019-01-16 with the following changelog:</p>
+The latest release is <a href="ftp://ftp.infradead.org/pub/openconnect/openconnect-8.05.tar.gz">OpenConnect v8.05</a>
+<i>(<a href="ftp://ftp.infradead.org/pub/openconnect/openconnect-8.05.tar.gz.asc">PGP signature</a>)</i>,
+released on 2019-09-12 with the following changelog:</p>
      <ul>
-       <li>Fix GNU/Hurd build.</li>
-       <li>Discover <tt>vpnc-script</tt> in default packaged location on FreeBSD/OpenBSD.</li>
-       <li>Support split-exclude routes for GlobalProtect.</li>
-       <li>Fix GnuTLS builds without libtasn1.</li>
-       <li>Fix DTLS support with OpenSSL 1.1.1+.</li>
-       <li>Add Cisco-compatible DTLSv1.2 support.</li>
-       <li>Invoke script with <tt>reason=attempt-reconnect</tt> before doing so.</li>
+       <li>Fix GlobalProtect ESP stall (<a href="https://gitlab.com/openconnect/openconnect/merge_requests/55">#55</a>).</li>
+       <li>Fix HTTP chunked encoding buffer overflow (CVE-2019-16239).</li>
      </ul>
 <!-- latest-release-end -->
 
 <p>For older releases and change logs, see the <a href="changelog.html">changelog page</a>.</p>
-
-<p><i>(Note: Due to a longstanding <a href="https://bugzilla.redhat.com/show_bug.cgi?id=450853">Fedora bug</a>
-you may occasionally find that the FTP server is accessible only by IPv6 and not Legacy IP. If this happens,
-please let me know by sending me an email. Or just join us in the 21st century and <a href="http://en.wikipedia.org/wiki/List_of_IPv6_tunnel_brokers">get IPv6</a>.)</i></p>
 
 <h2>Latest sources</h2>
 
