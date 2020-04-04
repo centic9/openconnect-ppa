@@ -34,21 +34,24 @@ int print_esp_keys(struct openconnect_info *vpninfo, const char *name, struct es
 	char enckey[256], mackey[256];
 
 	switch(vpninfo->esp_enc) {
-	case 0x02:
+	case ENC_AES_128_CBC:
 		enctype = "AES-128-CBC (RFC3602)";
 		break;
-	case 0x05:
+	case ENC_AES_256_CBC:
 		enctype = "AES-256-CBC (RFC3602)";
 		break;
 	default:
 		return -EINVAL;
 	}
 	switch(vpninfo->esp_hmac) {
-	case 0x01:
+	case HMAC_MD5:
 		mactype = "HMAC-MD5-96 (RFC2403)";
 		break;
-	case 0x02:
+	case HMAC_SHA1:
 		mactype = "HMAC-SHA-1-96 (RFC2404)";
+		break;
+	case HMAC_SHA256:
+		mactype = "HMAC-SHA-256-128 (RFC4868)";
 		break;
 	default:
 		return -EINVAL;
@@ -94,7 +97,38 @@ int esp_setup(struct openconnect_info *vpninfo, int dtls_attempt_period)
 	return 0;
 }
 
-int esp_mainloop(struct openconnect_info *vpninfo, int *timeout)
+int construct_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt, uint8_t next_hdr)
+{
+	const int blksize = 16;
+	int i, padlen, ret;
+
+	if (!next_hdr) {
+		if ((pkt->data[0] & 0xf0) == 0x60) /* iph->ip_v */
+			next_hdr = IPPROTO_IPV6;
+		else
+			next_hdr = IPPROTO_IPIP;
+	}
+
+	/* This gets much more fun if the IV is variable-length */
+	pkt->esp.spi = vpninfo->esp_out.spi;
+	pkt->esp.seq = htonl(vpninfo->esp_out.seq++);
+
+	padlen = blksize - 1 - ((pkt->len + 1) % blksize);
+	for (i=0; i<padlen; i++)
+		pkt->data[pkt->len + i] = i + 1;
+	pkt->data[pkt->len + padlen] = padlen;
+	pkt->data[pkt->len + padlen + 1] = next_hdr;
+
+	memcpy(pkt->esp.iv, vpninfo->esp_out.iv, sizeof(pkt->esp.iv));
+
+	ret = encrypt_esp_packet(vpninfo, pkt, pkt->len + padlen + 2);
+	if (ret)
+		return ret;
+
+	return sizeof(pkt->esp) + pkt->len + padlen + 2 + vpninfo->hmac_out_len;
+}
+
+int esp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 {
 	struct esp *esp = &vpninfo->esp_in[vpninfo->current_esp_in];
 	struct esp *old_esp = &vpninfo->esp_in[vpninfo->current_esp_in ^ 1];
@@ -118,7 +152,7 @@ int esp_mainloop(struct openconnect_info *vpninfo, int *timeout)
 	if (vpninfo->dtls_fd == -1)
 		return 0;
 
-	while (1) {
+	while (readable) {
 		int len = receive_mtu + vpninfo->pkt_trailer;
 		int i;
 		struct pkt *pkt;
@@ -140,10 +174,10 @@ int esp_mainloop(struct openconnect_info *vpninfo, int *timeout)
 		work_done = 1;
 
 		/* both supported algos (SHA1 and MD5) have 12-byte MAC lengths (RFC2403 and RFC2404) */
-		if (len <= sizeof(pkt->esp) + 12)
+		if (len <= sizeof(pkt->esp) + vpninfo->hmac_out_len)
 			continue;
 
-		len -= sizeof(pkt->esp) + 12;
+		len -= sizeof(pkt->esp) + vpninfo->hmac_out_len;
 		pkt->len = len;
 
 		if (pkt->esp.spi == esp->spi) {
@@ -261,34 +295,73 @@ int esp_mainloop(struct openconnect_info *vpninfo, int *timeout)
 	case KA_NONE:
 		break;
 	}
-	unmonitor_write_fd(vpninfo, dtls);
-	while ((this = dequeue_packet(&vpninfo->outgoing_queue))) {
+	while (1) {
 		int len;
 
-		len = encrypt_esp_packet(vpninfo, this);
-		if (len > 0) {
-			ret = send(vpninfo->dtls_fd, (void *)&this->esp, len, 0);
-			if (ret < 0) {
-				/* Not that this is likely to happen with UDP, but... */
-				if (errno == ENOBUFS || errno == EAGAIN || errno == EWOULDBLOCK) {
-					monitor_write_fd(vpninfo, dtls);
-					/* XXX: Keep the packet somewhere? */
-					free(this);
-					return work_done;
-				} else {
-					/* A real error in sending. Fall back to TCP? */
-					vpn_progress(vpninfo, PRG_ERR,
-						     _("Failed to send ESP packet: %s\n"),
-						     strerror(errno));
-				}
-			} else {
-				vpninfo->dtls_times.last_tx = time(NULL);
+		if (vpninfo->deflate_pkt) {
+			this = vpninfo->deflate_pkt;
+			len = this->len;
+		} else {
+			this = dequeue_packet(&vpninfo->outgoing_queue);
+			if (!this)
+				break;
 
-				vpn_progress(vpninfo, PRG_TRACE, _("Sent ESP packet of %d bytes\n"),
-					     len);
+			if (vpninfo->proto->udp_send_probes == oncp_esp_send_probes) {
+				uint8_t dontsend;
+
+				/* Pulse/NC can only accept ESP of the same protocol as the one
+				 * you connected to it with. The other has to go over IF-T/TLS. */
+				if (vpninfo->dtls_addr->sa_family == AF_INET6)
+					dontsend = 0x40;
+				else
+					dontsend = 0x60;
+
+				if ( (this->data[0] & 0xf0) == dontsend) {
+					store_be32(&this->pulse.vendor, 0xa4c);
+					store_be32(&this->pulse.type, 4);
+					store_be32(&this->pulse.len, this->len + 16);
+					queue_packet(&vpninfo->oncp_control_queue, this);
+					work_done = 1;
+					continue;
+				}
+			}
+
+			len = construct_esp_packet(vpninfo, this, 0);
+			if (len < 0) {
+				/* Should we disable ESP? */
+				free(this);
+				work_done = 1;
+				continue;
+			}
+		}
+
+		ret = send(vpninfo->dtls_fd, (void *)&this->esp, len, 0);
+		if (ret < 0) {
+			/* Not that this is likely to happen with UDP, but... */
+			if (errno == ENOBUFS || errno == EAGAIN || errno == EWOULDBLOCK) {
+				int err = errno;
+				vpninfo->deflate_pkt = this;
+				this->len = len;
+				vpn_progress(vpninfo, PRG_DEBUG,
+					     _("Requeueing failed ESP send: %s\n"),
+					     strerror(err));
+				monitor_write_fd(vpninfo, dtls);
+				return work_done;
+			} else {
+				/* A real error in sending. Fall back to TCP? */
+				vpn_progress(vpninfo, PRG_ERR,
+					_("Failed to send ESP packet: %s\n"),
+					strerror(errno));
 			}
 		} else {
-			/* XXX: Fall back to TCP transport? */
+			vpninfo->dtls_times.last_tx = time(NULL);
+
+			vpn_progress(vpninfo, PRG_TRACE, _("Sent ESP packet of %d bytes\n"),
+				     len);
+		}
+		if (this == vpninfo->deflate_pkt) {
+			unmonitor_write_fd(vpninfo, dtls);
+			vpninfo->deflate_pkt = NULL;
 		}
 		free(this);
 		work_done = 1;
@@ -310,6 +383,10 @@ void esp_close(struct openconnect_info *vpninfo)
 	}
 	if (vpninfo->dtls_state > DTLS_DISABLED)
 		vpninfo->dtls_state = DTLS_SLEEPING;
+	if (vpninfo->deflate_pkt) {
+		free(vpninfo->deflate_pkt);
+		vpninfo->deflate_pkt = NULL;
+	}
 }
 
 void esp_shutdown(struct openconnect_info *vpninfo)
@@ -321,4 +398,58 @@ void esp_shutdown(struct openconnect_info *vpninfo)
 		vpninfo->proto->udp_close(vpninfo);
 	if (vpninfo->dtls_state != DTLS_DISABLED)
 		vpninfo->dtls_state = DTLS_NOSECRET;
+}
+
+int openconnect_setup_esp_keys(struct openconnect_info *vpninfo, int new_keys)
+{
+	struct esp *esp_in;
+	int ret;
+
+	if (vpninfo->dtls_state == DTLS_DISABLED)
+		return -EOPNOTSUPP;
+	if (!vpninfo->dtls_addr)
+		return -EINVAL;
+
+	if (vpninfo->esp_hmac == HMAC_SHA256)
+		vpninfo->hmac_out_len = 16;
+	else /* MD5 and SHA1 */
+		vpninfo->hmac_out_len = 12;
+
+	if (new_keys) {
+		vpninfo->old_esp_maxseq = vpninfo->esp_in[vpninfo->current_esp_in].seq + 32;
+		vpninfo->current_esp_in ^= 1;
+	}
+
+	esp_in = &vpninfo->esp_in[vpninfo->current_esp_in];
+
+	if (new_keys) {
+		if (openconnect_random(&esp_in->spi, sizeof(esp_in->spi)) ||
+		    openconnect_random((void *)&esp_in->enc_key, vpninfo->enc_key_len) ||
+		    openconnect_random((void *)&esp_in->hmac_key, vpninfo->hmac_key_len)) {
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Failed to generate random keys for ESP\n"));
+			return -EIO;
+		}
+	}
+
+	if (openconnect_random(vpninfo->esp_out.iv, sizeof(vpninfo->esp_out.iv))) {
+		vpn_progress(vpninfo, PRG_ERR,
+			     _("Failed to generate initial IV for ESP\n"));
+		return -EIO;
+	}
+
+	/* This is the minimum; some implementations may increase it */
+	vpninfo->pkt_trailer = MAX_ESP_PAD + MAX_IV_SIZE + MAX_HMAC_SIZE;
+
+	vpninfo->esp_out.seq = vpninfo->esp_out.seq_backlog = 0;
+	esp_in->seq = esp_in->seq_backlog = 0;
+
+	ret = init_esp_ciphers(vpninfo, &vpninfo->esp_out, esp_in);
+	if (ret)
+		return ret;
+
+	if (vpninfo->dtls_state == DTLS_NOSECRET)
+		vpninfo->dtls_state = DTLS_SECRET;
+
+	return 0;
 }

@@ -38,6 +38,10 @@
 #include "gnutls.h"
 #endif
 
+#if defined(OPENCONNECT_OPENSSL)
+#include <openssl/bio.h>
+#endif
+
 struct openconnect_info *openconnect_vpninfo_new(const char *useragent,
 						 openconnect_validate_peer_cert_vfn validate_peer_cert,
 						 openconnect_write_new_config_vfn write_new_config,
@@ -127,7 +131,7 @@ const struct vpn_proto openconnect_protos[] = {
 	}, {
 		.name = "nc",
 		.pretty_name = N_("Juniper Network Connect"),
-		.description = N_("Compatible with Juniper Network Connect / Pulse Secure SSL VPN"),
+		.description = N_("Compatible with Juniper Network Connect"),
 		.flags = OC_PROTO_PROXY | OC_PROTO_CSD | OC_PROTO_AUTH_CERT | OC_PROTO_AUTH_OTP,
 		.vpn_close_session = oncp_bye,
 		.tcp_connect = oncp_connect,
@@ -162,6 +166,25 @@ const struct vpn_proto openconnect_protos[] = {
 		.udp_send_probes = gpst_esp_send_probes,
 		.udp_catch_probe = gpst_esp_catch_probe,
 #endif
+	}, {
+		.name = "pulse",
+		.pretty_name = N_("Pulse Connect Secure"),
+		.description = N_("Compatible with Pulse Connect Secure SSL VPN"),
+		.flags = OC_PROTO_PROXY,
+		.vpn_close_session = pulse_bye,
+		.tcp_connect = pulse_connect,
+		.tcp_mainloop = pulse_mainloop,
+		.add_http_headers = http_common_headers,
+		.obtain_cookie = pulse_obtain_cookie,
+		.udp_protocol = "ESP",
+#ifdef HAVE_ESP
+		.udp_setup = esp_setup,
+		.udp_mainloop = esp_mainloop,
+		.udp_close = esp_close,
+		.udp_shutdown = esp_shutdown,
+		.udp_send_probes = oncp_esp_send_probes,
+		.udp_catch_probe = oncp_esp_catch_probe,
+#endif
 	},
 	{ /* NULL */ }
 };
@@ -177,8 +200,8 @@ int openconnect_get_supported_protocols(struct oc_vpn_proto **protos)
 
 	for (p = openconnect_protos; p->name; p++, pr++) {
 		pr->name = p->name;
-		pr->pretty_name = p->pretty_name;
-		pr->description = p->description;
+		pr->pretty_name = _(p->pretty_name);
+		pr->description = _(p->description);
 		pr->flags = p->flags;
 	}
 	return (p - openconnect_protos);
@@ -362,7 +385,11 @@ void openconnect_vpninfo_free(struct openconnect_info *vpninfo)
 	free(vpninfo->cafile);
 	free(vpninfo->ifname);
 	free(vpninfo->dtls_cipher);
-#ifdef OPENCONNECT_GNUTLS
+	free(vpninfo->peer_cert_hash);
+#if defined(OPENCONNECT_OPENSSL) && defined (HAVE_BIO_METH_FREE)
+	if (vpninfo->ttls_bio_meth)
+		BIO_meth_free(vpninfo->ttls_bio_meth);
+#elif defined(OPENCONNECT_GNUTLS)
 	gnutls_free(vpninfo->cstp_cipher); /* In OpenSSL this is const */
 #ifdef HAVE_DTLS
 	gnutls_free(vpninfo->gnutls_dtls_cipher);
@@ -943,7 +970,7 @@ int openconnect_setup_tun_device(struct openconnect_info *vpninfo,
 		script_setenv_int(vpninfo, "TUNIDX", vpninfo->tun_idx);
 #endif
 	legacy_ifname = openconnect_utf8_to_legacy(vpninfo, vpninfo->ifname);
-	script_setenv(vpninfo, "TUNDEV", legacy_ifname, 0);
+	script_setenv(vpninfo, "TUNDEV", legacy_ifname, 0, 0);
 	if (legacy_ifname != vpninfo->ifname)
 		free(legacy_ifname);
 	script_config_tun(vpninfo, "connect");
@@ -1041,6 +1068,7 @@ int openconnect_check_peer_cert_hash(struct openconnect_info *vpninfo,
 	unsigned min_match_len;
 	unsigned real_min_match_len = 4;
 	unsigned old_len, fingerprint_len;
+	int ret = 0;
 
 	if (strchr(old_hash, ':')) {
 		if (strncmp(old_hash, "sha1:", 5) == 0) {
@@ -1084,14 +1112,14 @@ int openconnect_check_peer_cert_hash(struct openconnect_info *vpninfo,
 			if (old_len < min_match_len) {
 				vpn_progress(vpninfo, PRG_ERR, _("The size of the provided fingerprint is less than the minimum required (%u).\n"), real_min_match_len);
 			}
-			return 1;
+			ret = 1;
 		}
-	} else {
-		if (strcasecmp(old_hash, fingerprint))
-			return 1;
+	} else if (strcasecmp(old_hash, fingerprint)) {
+		ret = 1;
 	}
 
-	return 0;
+	free(fingerprint);
+	return ret;
 }
 
 const char *openconnect_get_cstp_cipher(struct openconnect_info *vpninfo)

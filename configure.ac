@@ -1,4 +1,4 @@
-AC_INIT(openconnect, 8.02)
+AC_INIT(openconnect, 8.05)
 AC_CONFIG_HEADERS([config.h])
 
 PKG_PROG_PKG_CONFIG
@@ -118,16 +118,6 @@ fi
 AC_DEFINE_UNQUOTED(DEFAULT_VPNCSCRIPT, "${with_vpnc_script}", [Default vpnc-script locatin])
 AC_SUBST(DEFAULT_VPNCSCRIPT, "${with_vpnc_script}")
 
-AC_CHECK_FUNC(memset_s,
-	      [AC_DEFINE(HAVE_MEMSET_S, 1, [Have memset_s() function])],
-	      [AC_CHECK_FUNC(explicit_memset,
-	                    [AC_DEFINE(HAVE_EXPLICIT_MEMSET, 1, [Have explicit_memset() function])],
-			    [AC_CHECK_FUNC(explicit_bzero,
-					   [AC_DEFINE(HAVE_EXPLICIT_BZERO, 1, [Have explicit_bzero() function])],
-					   [])
-			    ])
-	      ])
-
 AC_CHECK_FUNC(fdevname_r, [AC_DEFINE(HAVE_FDEVNAME_R, 1, [Have fdevname_r() function])], [])
 AC_CHECK_FUNC(statfs, [AC_DEFINE(HAVE_STATFS, 1, [Have statfs() function])], [])
 AC_CHECK_FUNC(getline, [AC_DEFINE(HAVE_GETLINE, 1, [Have getline() function])],
@@ -185,6 +175,27 @@ AS_COMPILER_FLAGS(WFLAGS,
          -Wpointer-arith
          -Wwrite-strings")
 AC_SUBST(WFLAGS, [$WFLAGS])
+
+oldCFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS $WFLAGS"
+AC_MSG_CHECKING([For memset_s])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([
+	#define __STDC_WANT_LIB_EXT1__ 1
+	#include <string.h>],[[
+	unsigned char *foo[16];
+	memset_s(foo, 16, 0, 16);]])],
+	       [AC_MSG_RESULT([yes])
+	        AC_DEFINE(__STDC_WANT_LIB_EXT1__, 1, [To request memset_s])
+	        AC_DEFINE(HAVE_MEMSET_S, 1, [Have memset_s() function])],
+	       [AC_MSG_RESULT([no])
+	        AC_CHECK_FUNC(explicit_memset,
+			      [AC_DEFINE(HAVE_EXPLICIT_MEMSET, 1, [Have explicit_memset() function])],
+			      [AC_CHECK_FUNC(explicit_bzero,
+					     [AC_DEFINE(HAVE_EXPLICIT_BZERO, 1, [Have explicit_bzero() function])],
+					     [])
+			      ])
+	       ])
+CFLAGS="$oldCFLAGS"
 
 if test "$have_win" = yes; then
    # Checking "properly" for __attribute__((dllimport,stdcall)) functions is non-trivial
@@ -332,7 +343,9 @@ if test "$ssl_library" = ""; then
 	     LIBS="$oldLIBS"])
 	ssl_library=OpenSSL
 	PKG_CHECK_MODULES(P11KIT, p11-kit-1,
-	    [PKG_CHECK_MODULES(LIBP11, libp11,
+	    # libp11 0.4.7 fails to export ERR_LIB_PKCS11 so we don't know what it
+	    # is and can't match its errors, which we need to for login checks.
+	    [PKG_CHECK_MODULES(LIBP11, libp11 != 0.4.7,
 		[AC_DEFINE(HAVE_LIBP11, 1, [Have libp11 and p11-kit for OpenSSL])
 		 AC_SUBST(P11KIT_PC, ["libp11 p11-kit-1"])
 		 proxy_module="`$PKG_CONFIG --variable=proxy_module p11-kit-1`"
@@ -444,11 +457,29 @@ case "$ssl_library" in
 			AC_DEFINE(HAVE_DTLS1_STOP_TIMER, [1], [OpenSSL has dtls1_stop_timer() function])],
 		       [AC_MSG_RESULT(no)])
 
-	AC_MSG_CHECKING([for DTLSv1_2_client_method() in OpenSSL])
+	# DTLS_client_method() and DTLSv1_2_client_method() were both added between
+	# OpenSSL v1.0.1 and v1.0.2. DTLSV1.2_client_method() was later deprecated
+	# in v1.1.0 so we use DTLS_client_method() as our check for DTLSv1.2 support
+	# and that's what we actually use in openssl-dtls.c too.
+	AC_MSG_CHECKING([for DTLS_client_method() in OpenSSL])
 	AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <openssl/ssl.h>],
-					[DTLSv1_2_client_method();])],
+					[DTLS_client_method();])],
 		       [AC_MSG_RESULT(yes)
-			AC_DEFINE(HAVE_DTLS12, [1], [OpenSSL has DTLSv1_2_client_method() function])],
+			AC_DEFINE(HAVE_DTLS12, [1], [OpenSSL has DTLS_client_method() function])],
+		       [AC_MSG_RESULT(no)])
+
+	AC_MSG_CHECKING([for SSL_CTX_set_min_proto_version() in OpenSSL])
+	AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <openssl/ssl.h>],
+					[SSL_CTX_set_min_proto_version((void *)0, 0);])],
+		       [AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_SSL_CTX_PROTOVER, [1], [OpenSSL has SSL_CTX_set_min_proto_version() function])],
+		       [AC_MSG_RESULT(no)])
+
+	AC_MSG_CHECKING([for BIO_meth_free() in OpenSSL])
+	AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <openssl/bio.h>],
+					[BIO_meth_free((void *)0);])],
+		       [AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_BIO_METH_FREE, [1], [OpenSSL has BIO_meth_free() function])],
 		       [AC_MSG_RESULT(no)])
 
 	AC_CHECK_FUNC(HMAC_CTX_copy,
@@ -923,7 +954,9 @@ AC_CHECK_HEADER([if_tun.h],
             [AC_CHECK_HEADER([net/tun/if_tun.h],
                 [AC_DEFINE([IF_TUN_HDR], ["net/tun/if_tun.h"])])])])])
 
-AC_CHECK_HEADER([net/if_utun.h], AC_DEFINE([HAVE_NET_UTUN_H], 1, [Have net/utun.h]))
+AC_CHECK_HEADER([net/if_utun.h], AC_DEFINE([HAVE_NET_UTUN_H], 1, [Have net/if_utun.h]), ,
+		[#include <sys/types.h>])
+
 AC_CHECK_HEADER([alloca.h], AC_DEFINE([HAVE_ALLOCA_H], 1, [Have alloca.h]))
 
 AC_CHECK_HEADER([endian.h],
@@ -934,18 +967,8 @@ AC_CHECK_HEADER([endian.h],
             [AC_DEFINE([ENDIAN_HDR], [<sys/isa_defs.h>])])])])
 
 build_www=yes
-AC_PATH_PROGS(PYTHON, [python2 python], [], $PATH:/bin:/usr/bin)
-if (test -n "${ac_cv_path_PYTHON}"); then
-   AC_MSG_CHECKING([that python is version 2.x])
-   if $PYTHON --version 2>&1 | grep "Python 2\." > /dev/null; then
-      AC_MSG_RESULT([yes])
-      AC_SUBST(PYTHON, ${ac_cv_path_PYTHON})
-   else
-      AC_MSG_RESULT([no])
-      AC_MSG_NOTICE([Python is not v2.x; not building HTML pages])
-      build_www=no
-   fi
-else
+AC_PATH_PROGS(PYTHON, [python3 python2 python], [], $PATH:/bin:/usr/bin)
+if test -z "${ac_cv_path_PYTHON}"; then
    AC_MSG_NOTICE([Python not found; not building HTML pages])
    build_www=no
 fi

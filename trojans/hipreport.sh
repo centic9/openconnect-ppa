@@ -8,29 +8,36 @@
 #             --authenticate --protocol=gp, which includes parameters
 #             from the /ssl-vpn/login.esp response
 #
-#   --client-ip: IPv4 address allocated by the GlobalProtect VPN for
-#                this client (included in /ssl-vpn/getconfig.esp
-#                response)
+#   --client-ip{,v6}: IPv4/6 addresses allocated by the GlobalProtect
+#                     VPN for this client (included in
+#                     /ssl-vpn/getconfig.esp response)
 #
 #   --md5: The md5 digest to encode into this HIP report. I'm not sure
 #          exactly what this is the md5 digest *of*, but all that
 #          really matters is that the value in the HIP report
 #          submission should match the value in the HIP report check.
+#
+# This hipreport.sh does not work as-is on Android. The large here-doc
+# (cat <<EOF) does not appear to work with Android's /system/bin/sh,
+# likely due to an insufficient read buffer size.
+# Try hipreport-android.sh instead.
 
 # Read command line arguments into variables
 COOKIE=
 IP=
+IPv6=
 MD5=
 
 while [ "$1" ]; do
-    if [ "$1" = "--cookie" ];    then shift; COOKIE="$1"; fi
-    if [ "$1" = "--client-ip" ]; then shift; IP="$1"; fi
-    if [ "$1" = "--md5" ];       then shift; MD5="$1"; fi
+    if [ "$1" = "--cookie" ];      then shift; COOKIE="$1"; fi
+    if [ "$1" = "--client-ip" ];   then shift; IP="$1"; fi
+    if [ "$1" = "--client-ipv6" ]; then shift; IPV6="$1"; fi
+    if [ "$1" = "--md5" ];         then shift; MD5="$1"; fi
     shift
 done
 
-if [ -z "$COOKIE" -o -z "$IP" -o -z "$MD5" ]; then
-    echo "Parameters --cookie, --computer, --client-ip, and --md5 are required" >&2
+if [ -z "$COOKIE" -o -z "$MD5" -o -z "$IP$IPV6" ]; then
+    echo "Parameters --cookie, --md5, and --client-ip and/or --client-ipv6 are required" >&2
     exit 1;
 fi
 
@@ -41,9 +48,14 @@ COMPUTER=$(echo "$COOKIE" | sed -rn 's/(.+&|^)computer=([^&]+)(&.+|$)/\2/p')
 
 # Timestamp in the format expected by GlobalProtect server
 NOW=$(date +'%m/%d/%Y %H:%M:%S')
+DAY=$(date +'%d')
+MONTH=$(date +'%m')
+YEAR=$(date +'%Y')
 
 # This value may need to be extracted from the official HIP report, if a made-up value is not accepted.
 HOSTID="deadbeef-dead-beef-dead-beefdeadbeef"
+# Many VPNs seem to require trailing backslash, others don't accept it
+ENCDRIVE='C:\\'
 
 cat <<EOF
 <hip-report name="hip-report">
@@ -53,7 +65,7 @@ cat <<EOF
 	<host-name>$COMPUTER</host-name>
 	<host-id>$HOSTID</host-id>
 	<ip-address>$IP</ip-address>
-	<ipv6-address></ipv6-address>
+	<ipv6-address>$IPV6</ipv6-address>
 	<generate-time>$NOW</generate-time>
 	<categories>
 		<entry name="host-info">
@@ -71,7 +83,7 @@ cat <<EOF
 						<entry name="$IP"/>
 					</ip-address>
 					<ipv6-address>
-						<entry name="dead::beef:dead:beef:dead"/>
+						<entry name="$IPV6"/>
 					</ipv6-address>
 				</entry>
 			</network-interface>
@@ -80,15 +92,15 @@ cat <<EOF
 			<list>
 				<entry>
 					<ProductInfo>
-						<Prod name="McAfee VirusScan Enterprise" version="8.8.0.1804" defver="8682.0" prodType="1" engver="5900.7806" osType="1" vendor="McAfee, Inc." dateday="12" dateyear="2017" datemon="10">
+						<Prod name="McAfee VirusScan Enterprise" version="8.8.0.1804" defver="8682.0" prodType="1" engver="5900.7806" osType="1" vendor="McAfee, Inc." dateday="$DAY" dateyear="$YEAR" datemon="$MONTH">
 						</Prod>
 						<real-time-protection>yes</real-time-protection>
-						<last-full-scan-time>10/11/2017 15:23:41</last-full-scan-time>
+						<last-full-scan-time>$NOW</last-full-scan-time>
 					</ProductInfo>
 				</entry>
 				<entry>
 					<ProductInfo>
-						<Prod name="Windows Defender" version="4.11.15063.332" defver="1.245.683.0" prodType="1" engver="1.1.13804.0" osType="1" vendor="Microsoft Corp." dateday="8" dateyear="2017" datemon="6">
+						<Prod name="Windows Defender" version="4.11.15063.332" defver="1.245.683.0" prodType="1" engver="1.1.13804.0" osType="1" vendor="Microsoft Corp." dateday="$DAY" dateyear="$YEAR" datemon="$MONTH">
 						</Prod>
 						<real-time-protection>no</real-time-protection>
 						<last-full-scan-time>n/a</last-full-scan-time>
@@ -100,15 +112,15 @@ cat <<EOF
 			<list>
 				<entry>
 					<ProductInfo>
-						<Prod name="McAfee VirusScan Enterprise" version="8.8.0.1804" defver="8682.0" prodType="2" engver="5900.7806" osType="1" vendor="McAfee, Inc." dateday="12" dateyear="2017" datemon="10">
+						<Prod name="McAfee VirusScan Enterprise" version="8.8.0.1804" defver="8682.0" prodType="2" engver="5900.7806" osType="1" vendor="McAfee, Inc." dateday="$DAY" dateyear="$YEAR" datemon="$MONTH">
 						</Prod>
 						<real-time-protection>yes</real-time-protection>
-						<last-full-scan-time>10/11/2017 15:23:41</last-full-scan-time>
+						<last-full-scan-time>$NOW</last-full-scan-time>
 					</ProductInfo>
 				</entry>
 				<entry>
 					<ProductInfo>
-						<Prod name="Windows Defender" version="4.11.15063.332" defver="1.245.683.0" prodType="2" engver="1.1.13804.0" osType="1" vendor="Microsoft Corp." dateday="8" dateyear="2017" datemon="6">
+						<Prod name="Windows Defender" version="4.11.15063.332" defver="1.245.683.0" prodType="2" engver="1.1.13804.0" osType="1" vendor="Microsoft Corp." dateday="$DAY" dateyear="$YEAR" datemon="$MONTH">
 						</Prod>
 						<real-time-protection>no</real-time-protection>
 						<last-full-scan-time>n/a</last-full-scan-time>
@@ -135,7 +147,7 @@ cat <<EOF
 						</Prod>
 						<drives>
 							<entry>
-								<drive-name>C:</drive-name>
+								<drive-name>$ENCDRIVE</drive-name>
 								<enc-state>full</enc-state>
 							</entry>
 						</drives>

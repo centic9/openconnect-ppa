@@ -58,12 +58,9 @@ server. This shell script must output the HIP report to standard output and exit
              --authenticate --protocol=gp, which includes parameters
              --from the /ssl-vpn/login.esp response
 
-   --computer: local hostname, which can be overriden with
-               --openconnect local-hostname=HOSTNAME
-
-   --client-ip: IPv4 address allocated by the GlobalProtect VPN for
-                this client (included in /ssl-vpn/getconfig.esp
-                response)
+   --client-ip{,v6}: IPv4/6 addresses allocated by the GlobalProtect
+                     VPN for this client (included in
+                     /ssl-vpn/getconfig.esp response)
 
    --md5: The md5 digest to encode into this HIP report. All that
           really matters is that the value in the HIP report
@@ -72,8 +69,11 @@ server. This shell script must output the HIP report to standard output and exit
 
 <h2>Generating/spoofing a HIP report</h2>
 
-<p>An example <tt>hipreport.sh</tt> script is included in the
-OpenConnect distribution, in the <tt>trojans/</tt> subdirectory.</p>
+<p>Two example scripts are included in the OpenConnect distribution,
+in the <tt>trojans/</tt> subdirectory: <tt>hipreport.sh</tt> (which
+reproduces the behavior of a GlobalProtect Windows client) and
+<tt>hipreport-android.sh</tt> (a report with minimal contents
+suitable for use on an Android device).</p>
 
 <p>Depending on how picky your GlobalProtect
 VPN is, it may be necessary to spoof or alter some of the parameters

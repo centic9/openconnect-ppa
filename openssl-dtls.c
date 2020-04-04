@@ -332,6 +332,7 @@ int start_dtls_handshake(struct openconnect_info *vpninfo, int dtls_fd)
 	const char *cipher = vpninfo->dtls_cipher;
 
 #ifdef HAVE_DTLS12
+	/* These things should never happen unless they're supported */
 	if (vpninfo->cisco_dtls12) {
 		dtlsver = DTLS1_2_VERSION;
 	} else if (!strcmp(cipher, "OC-DTLS1_2-AES128-GCM")) {
@@ -349,16 +350,16 @@ int start_dtls_handshake(struct openconnect_info *vpninfo, int dtls_fd)
 
 	if (!vpninfo->dtls_ctx) {
 #ifdef HAVE_DTLS12
+		/* If we can use SSL_CTX_set_min_proto_version, do so. */
 		dtls_method = DTLS_client_method();
 #endif
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
+#ifndef HAVE_SSL_CTX_PROTOVER
+		/* If !HAVE_DTLS12, dtlsver *MUST* be DTLS1_BAD_VER because it's set
+		 * at the top of the function and nothing can change it. */
 		if (dtlsver == DTLS1_BAD_VER)
 			dtls_method = DTLSv1_client_method();
-#ifdef HAVE_DTLS12
-		else if (dtlsver == DTLS1_2_VERSION)
-			dtls_method = DTLSv1_2_client_method();
 #endif
-#endif
+
 		vpninfo->dtls_ctx = SSL_CTX_new(dtls_method);
 		if (!vpninfo->dtls_ctx) {
 			vpn_progress(vpninfo, PRG_ERR,
@@ -367,24 +368,26 @@ int start_dtls_handshake(struct openconnect_info *vpninfo, int dtls_fd)
 			vpninfo->dtls_attempt_period = 0;
 			return -EINVAL;
 		}
-		if (dtlsver) {
-#if OPENSSL_VERSION_NUMBER < 0x10100000L || defined(LIBRESSL_VERSION_NUMBER)
-			if (dtlsver == DTLS1_BAD_VER)
-				SSL_CTX_set_options(vpninfo->dtls_ctx, SSL_OP_CISCO_ANYCONNECT);
-#else
-			if (!SSL_CTX_set_min_proto_version(vpninfo->dtls_ctx, dtlsver) ||
-			    !SSL_CTX_set_max_proto_version(vpninfo->dtls_ctx, dtlsver)) {
-				vpn_progress(vpninfo, PRG_ERR,
-					     _("Set DTLS CTX version failed\n"));
-				openconnect_report_ssl_errors(vpninfo);
-				SSL_CTX_free(vpninfo->dtls_ctx);
-				vpninfo->dtls_ctx = NULL;
-				vpninfo->dtls_attempt_period = 0;
-				return -EINVAL;
-			}
+#ifdef HAVE_SSL_CTX_PROTOVER
+		if (dtlsver &&
+		    (!SSL_CTX_set_min_proto_version(vpninfo->dtls_ctx, dtlsver) ||
+		     !SSL_CTX_set_max_proto_version(vpninfo->dtls_ctx, dtlsver))) {
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Set DTLS CTX version failed\n"));
+			openconnect_report_ssl_errors(vpninfo);
+			SSL_CTX_free(vpninfo->dtls_ctx);
+			vpninfo->dtls_ctx = NULL;
+			vpninfo->dtls_attempt_period = 0;
+			return -EINVAL;
+		}
+#else /* !HAVE_SSL_CTX_PROTOVER */
+		/* If we used the legacy version-specific methods, we need the special
+		 * way to make TLSv1_client_method() do DTLS1_BAD_VER. */
+		if (dtlsver == DTLS1_BAD_VER)
+			SSL_CTX_set_options(vpninfo->dtls_ctx, SSL_OP_CISCO_ANYCONNECT);
 #endif
 #if defined (HAVE_DTLS12) && !defined(OPENSSL_NO_PSK)
-		} else {
+		if (!dtlsver) {
 			SSL_CTX_set_psk_client_callback(vpninfo->dtls_ctx, psk_callback);
 			/* For PSK we override the DTLS master secret with one derived
 			 * from the HTTPS session. */
@@ -401,9 +404,46 @@ int start_dtls_handshake(struct openconnect_info *vpninfo, int dtls_fd)
 			}
 			/* For SSL_CTX_set_cipher_list() */
 			cipher = "PSK";
-
-#endif
 		}
+#endif /* OPENSSL_NO_PSK */
+#ifdef SSL_OP_NO_ENCRYPT_THEN_MAC
+		/*
+		 * I'm fairly sure I wasn't lying when I said I had tested
+		 * https://github.com/openssl/openssl/commit/e23d5071ec4c7aa6bb2b
+		 * against GnuTLS both with and without EtM in 2016.
+		 *
+		 * Nevertheless, in 2019 it seems to be failing to negotiate
+		 * at least for DTLS1_BAD_VER against ocserv with GnuTLS 3.6.7:
+		 * https://gitlab.com/gnutls/gnutls/issues/139 — I think because
+		 * GnuTLS isn't actually doing EtM after negotiating it (like
+		 * OpenSSL 1.1.0 used to).
+		 *
+		 * Just turn it off. Real Cisco servers don't do it for
+		 * DTLS1_BAD_VER, and against ocserv (and newer Cisco) we should
+		 * be using DTLSv1.2 with AEAD ciphersuites anyway so EtM is
+		 * irrelevant.
+		 */
+		SSL_CTX_set_options(vpninfo->dtls_ctx, SSL_OP_NO_ENCRYPT_THEN_MAC);
+#endif
+#ifdef SSL_OP_NO_EXTENDED_MASTER_SECRET
+		/* RFC7627 says:
+		 *
+		 *   If the original session did not use the "extended_master_secret"
+		 *   extension but the new ClientHello contains the extension, then the
+		 *   server MUST NOT perform the abbreviated handshake.  Instead, it
+		 *   SHOULD continue with a full handshake (as described in
+		 *   Section 5.2) to negotiate a new session.
+		 *
+		 * Now that would be distinctly suboptimal, since we have no way to do
+		 * a full handshake (we even explicitly protect against it, in case a
+		 * MITM server attempts to hijack our deliberately-resumed session).
+		 *
+		 * So where OpenSSL provides the choice, tell it not to use extms on
+		 * resumed sessions.
+		 */
+		if (dtlsver)
+			SSL_CTX_set_options(vpninfo->dtls_ctx, SSL_OP_NO_EXTENDED_MASTER_SECRET);
+#endif
 		/* If we don't readahead, then we do short reads and throw
 		   away the tail of data packets. */
 		SSL_CTX_set_read_ahead(vpninfo->dtls_ctx, 1);
@@ -524,7 +564,7 @@ int dtls_try_handshake(struct openconnect_info *vpninfo)
 			/* For PSK-NEGOTIATE, we have to determine the tunnel MTU
 			 * for ourselves based on the base MTU */
 			int data_mtu = vpninfo->cstp_basemtu;
-			if (vpninfo->peer_addr->sa_family == IPPROTO_IPV6)
+			if (vpninfo->peer_addr->sa_family == AF_INET6)
 				data_mtu -= 40; /* IPv6 header */
 			else
 				data_mtu -= 20; /* Legacy IP header */

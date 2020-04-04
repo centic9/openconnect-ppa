@@ -24,13 +24,16 @@
 /* Have asprintf() function */
 #undef HAVE_ASPRINTF
 
+/* OpenSSL has BIO_meth_free() function */
+#undef HAVE_BIO_METH_FREE
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
 
 /* Build with DTLS support */
 #undef HAVE_DTLS
 
-/* OpenSSL has DTLSv1_2_client_method() function */
+/* OpenSSL has DTLS_client_method() function */
 #undef HAVE_DTLS12
 
 /* OpenSSL has dtls1_stop_timer() function */
@@ -105,7 +108,7 @@
 /* Have memset_s() function */
 #undef HAVE_MEMSET_S
 
-/* Have net/utun.h */
+/* Have net/if_utun.h */
 #undef HAVE_NET_UTUN_H
 
 /* Have nl_langinfo() function */
@@ -113,6 +116,9 @@
 
 /* Have. P11. Kit. */
 #undef HAVE_P11KIT
+
+/* OpenSSL has SSL_CTX_set_min_proto_version() function */
+#undef HAVE_SSL_CTX_PROTOVER
 
 /* Have statfs() function */
 #undef HAVE_STATFS
@@ -218,3 +224,6 @@
 
 /* Windows API version */
 #undef _WIN32_WINNT
+
+/* To request memset_s */
+#undef __STDC_WANT_LIB_EXT1__

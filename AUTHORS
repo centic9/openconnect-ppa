@@ -1,7 +1,7 @@
-  2353	David Woodhouse <dwmw2@infradead.org>
+  2431	David Woodhouse <dwmw2@infradead.org>
    273	Kevin Cernekee <cernekee@gmail.com>
-    86	Nikos Mavrogiannopoulos <nmav@gnutls.org>
-    75	Daniel Lenski <dlenski@gmail.com>
+    89	Nikos Mavrogiannopoulos <nmav@gnutls.org>
+    88	Daniel Lenski <dlenski@gmail.com>
     24	Jussi Kukkonen <jku@linux.intel.com>
     17	Adam Piątyszek <ediap@users.sourceforge.net>
     17	Antonio Borneo <borneo.antonio@gmail.com>
@@ -26,9 +26,12 @@
      2	Piotr Kubaj <pkubaj@anongoth.pl>
      2	Ralph Schmieder <ralph.schmieder@gmail.com>
      2	Ray Kohler <ataraxia937@gmail.com>
+     2	Rosen Penev <rosenp@gmail.com>
      1	Cameron Eagans <me@cweagans.net>
      1	Chad Catlett <chad@catlett.info>
      1	Chaskiel Grundman <cg2v@andrew.cmu.edu>
+     1	Colin Petrie <colin@spakka.net>
+     1	Corey Wright <cwright@digitalocean.com>
      1	David GEIGER <geiger.david68210@gmail.com>
      1	Dominic Hargreaves <dom@earth.li>
      1	Dominique Leuenberger <dimstar@opensuse.org>
@@ -47,11 +50,14 @@
      1	Katelyn Schiesser <katelyn.schiesser@gmail.com>
      1	Keith Moyer <openconnect-devel@keithmoyer.com>
      1	Kyle Johnson <kyle@powerworld.com>
+     1	Marc St-Amand <pedalling.philosopher@gmail.com>
      1	Mathias Schuepany <mathias.schuepany@catalysts.cc>
      1	Michael Zhilin <zhilin@netcracker.com>
      1	Murilo Opsfelder Araujo <muriloo@linux.vnet.ibm.com>
      1	Nick Parrin <spam@coreworks.be>
      1	Nikolay Panin <nick_panin@mail.ru>
+     1	Omar Sandoval <osandov@osandov.com>
+     1	Patrick Lühne <patrick@luehne.de>
      1	Paul Brook <paul@codesourcery.com>
      1	Paul Donohue <git@PaulSD.com>
      1	Pouya D. Tafti <p@san-serriffe.org>
@@ -66,4 +72,6 @@
      1	Thomas Wood <thomas.wood@intel.com>
      1	Thorsten Bonhagen <Thorsten.Bonhagen@tbon.de>
      1	Tiago Vignatti <tiago.vignatti@intel.com>
+     1	Yoshimasa Niwa <niw@niw.at>
      1	Youfu Zhang <zhangyoufu@gmail.com>
+     1	raminfp <ramin.blackhat@gmail.com>

@@ -112,6 +112,12 @@
 #ifndef MIN
 #define MIN(x,y) ((x)<(y))?(x):(y)
 #endif
+
+/* At least MinGW headers seem not to provide IPPROTO_IPIP */
+#ifndef IPPROTO_IPIP
+#define IPPROTO_IPIP 0x04
+#endif
+
 /****************************************************************************/
 
 struct pkt {
@@ -137,6 +143,13 @@ struct pkt {
 			unsigned char pad[8];
 			unsigned char hdr[16];
 		} gpst;
+		struct {
+			unsigned char pad[8];
+			uint32_t vendor;
+			uint32_t type;
+			uint32_t len;
+			uint32_t ident;
+		} pulse;
 	};
 	unsigned char data[];
 };
@@ -263,7 +276,7 @@ struct vpn_proto {
 	/* Establish the TCP connection (and obtain configuration) */
 	int (*tcp_connect)(struct openconnect_info *vpninfo);
 
-	int (*tcp_mainloop)(struct openconnect_info *vpninfo, int *timeout);
+	int (*tcp_mainloop)(struct openconnect_info *vpninfo, int *timeout, int readable);
 
 	/* Add headers common to each HTTP request */
 	void (*add_http_headers)(struct openconnect_info *vpninfo, struct oc_text_buf *buf);
@@ -273,7 +286,7 @@ struct vpn_proto {
 
 	/* This will actually complete the UDP connection setup/handshake on the wire,
 	   as well as transporting packets */
-	int (*udp_mainloop)(struct openconnect_info *vpninfo, int *timeout);
+	int (*udp_mainloop)(struct openconnect_info *vpninfo, int *timeout, int readable);
 
 	/* Close the connection but leave the session setup so it restarts */
 	void (*udp_close)(struct openconnect_info *vpninfo);
@@ -336,7 +349,7 @@ struct esp {
 	gnutls_cipher_hd_t cipher;
 	gnutls_hmac_hd_t hmac;
 #elif defined(OPENCONNECT_OPENSSL)
-	HMAC_CTX *hmac, *pkt_hmac;
+	HMAC_CTX *hmac;
 	EVP_CIPHER_CTX *cipher;
 #endif
 	uint64_t seq_backlog;
@@ -344,6 +357,7 @@ struct esp {
 	uint32_t spi; /* Stored network-endian */
 	unsigned char enc_key[0x40]; /* Encryption key */
 	unsigned char hmac_key[0x40]; /* HMAC key */
+	unsigned char iv[16];
 };
 
 struct oc_pcsc_ctx;
@@ -373,6 +387,7 @@ struct openconnect_info {
 	struct esp esp_out;
 	int enc_key_len;
 	int hmac_key_len;
+	int hmac_out_len;
 	uint32_t esp_magic;  /* GlobalProtect magic ping address (network-endian) */
 
 	int tncc_fd; /* For Juniper TNCC */
@@ -499,8 +514,10 @@ struct openconnect_info {
 	X509 *cert_x509;
 	SSL_CTX *https_ctx;
 	SSL *https_ssl;
+	BIO_METHOD *ttls_bio_meth;
 #elif defined(OPENCONNECT_GNUTLS)
 	gnutls_session_t https_sess;
+	gnutls_session_t eap_ttls_sess;
 	gnutls_certificate_credentials_t https_cred;
 	gnutls_psk_client_credentials_t psk_cred;
 	char local_cert_md5[MD5_SIZE * 2 + 1]; /* For CSD */
@@ -512,6 +529,12 @@ struct openconnect_info {
 	struct oc_tpm2_ctx *tpm2;
 #endif
 #endif /* OPENCONNECT_GNUTLS */
+	struct oc_text_buf *ttls_pushbuf;
+	uint8_t ttls_eap_ident;
+	unsigned char *ttls_recvbuf;
+	int ttls_recvpos;
+	int ttls_recvlen;
+
 	struct pin_cache *pin_cache;
 	struct keepalive_info ssl_times;
 	int owe_ssl_dpd_response;
@@ -558,6 +581,8 @@ struct openconnect_info {
 	unsigned char dtls_secret[TLS_MASTER_KEY_SIZE];
 	unsigned char dtls_app_id[32];
 	unsigned dtls_app_id_size;
+
+	uint32_t ift_seq;
 
 	int cisco_dtls12;
 	char *dtls_cipher;
@@ -695,11 +720,17 @@ struct openconnect_info {
 #define AC_PKT_COMPRESSED	8	/* Compressed data */
 #define AC_PKT_TERM_SERVER	9	/* Server kick */
 
-/* Encryption and HMAC algorithms (matching Juniper's binary encoding) */
+/* Encryption and HMAC algorithms (matching Juniper/Pulse binary encoding) */
 #define ENC_AES_128_CBC		2
 #define ENC_AES_256_CBC		5
+
 #define HMAC_MD5		1
 #define HMAC_SHA1		2
+#define HMAC_SHA256		3
+
+#define MAX_HMAC_SIZE		32	/* SHA256 */
+#define MAX_IV_SIZE		16
+#define MAX_ESP_PAD		17	/* Including the next-header field */
 
 #define vpn_progress(_v, lvl, ...) do {					\
 	if ((_v)->verbose >= (lvl))					\
@@ -810,7 +841,7 @@ char *openconnect_legacy_to_utf8(struct openconnect_info *vpninfo, const char *l
 
 /* script.c */
 unsigned char unhex(const char *data);
-int script_setenv(struct openconnect_info *vpninfo, const char *opt, const char *val, int append);
+int script_setenv(struct openconnect_info *vpninfo, const char *opt, const char *val, int trunc, int append);
 int script_setenv_int(struct openconnect_info *vpninfo, const char *opt, int value);
 void prepare_script_env(struct openconnect_info *vpninfo);
 int script_config_tun(struct openconnect_info *vpninfo, const char *reason);
@@ -829,9 +860,12 @@ int dtls_try_handshake(struct openconnect_info *vpninfo);
 unsigned dtls_set_mtu(struct openconnect_info *vpninfo, unsigned mtu);
 void dtls_ssl_free(struct openconnect_info *vpninfo);
 
+void *establish_eap_ttls(struct openconnect_info *vpninfo);
+void destroy_eap_ttls(struct openconnect_info *vpninfo, void *sess);
+
 /* dtls.c */
 int dtls_setup(struct openconnect_info *vpninfo, int dtls_attempt_period);
-int dtls_mainloop(struct openconnect_info *vpninfo, int *timeout);
+int dtls_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 void dtls_close(struct openconnect_info *vpninfo);
 void dtls_shutdown(struct openconnect_info *vpninfo);
 void gather_dtls_ciphers(struct openconnect_info *vpninfo, struct oc_text_buf *buf, struct oc_text_buf *buf12);
@@ -844,7 +878,7 @@ char *openconnect_bin2base64(const char *prefix, const uint8_t *data, unsigned l
 /* cstp.c */
 void cstp_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *buf);
 int cstp_connect(struct openconnect_info *vpninfo);
-int cstp_mainloop(struct openconnect_info *vpninfo, int *timeout);
+int cstp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 int cstp_bye(struct openconnect_info *vpninfo, const char *reason);
 int decompress_and_queue_packet(struct openconnect_info *vpninfo, int compr_type,
 				unsigned char *buf, int len);
@@ -856,16 +890,26 @@ void oncp_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *b
 
 /* oncp.c */
 int oncp_connect(struct openconnect_info *vpninfo);
-int oncp_mainloop(struct openconnect_info *vpninfo, int *timeout);
+int oncp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 int oncp_bye(struct openconnect_info *vpninfo, const char *reason);
 void oncp_esp_close(struct openconnect_info *vpninfo);
 int oncp_esp_send_probes(struct openconnect_info *vpninfo);
 int oncp_esp_catch_probe(struct openconnect_info *vpninfo, struct pkt *pkt);
 
+/* pulse.c */
+int pulse_obtain_cookie(struct openconnect_info *vpninfo);
+void pulse_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *buf);
+int pulse_connect(struct openconnect_info *vpninfo);
+int pulse_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
+int pulse_bye(struct openconnect_info *vpninfo, const char *reason);
+int pulse_eap_ttls_send(struct openconnect_info *vpninfo, const void *data, int len);
+int pulse_eap_ttls_recv(struct openconnect_info *vpninfo, void *data, int len);
+
 /* auth-globalprotect.c */
 int gpst_obtain_cookie(struct openconnect_info *vpninfo);
 void gpst_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *buf);
 int gpst_bye(struct openconnect_info *vpninfo, const char *reason);
+const char *gpst_os_name(struct openconnect_info *vpninfo);
 
 /* gpst.c */
 int gpst_xml_or_error(struct openconnect_info *vpninfo, char *response,
@@ -873,7 +917,7 @@ int gpst_xml_or_error(struct openconnect_info *vpninfo, char *response,
 					  int (*challenge_cb)(struct openconnect_info *, char *prompt, char *inputStr, void *cb_data),
 					  void *cb_data);
 int gpst_setup(struct openconnect_info *vpninfo);
-int gpst_mainloop(struct openconnect_info *vpninfo, int *timeout);
+int gpst_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 int gpst_esp_send_probes(struct openconnect_info *vpninfo);
 int gpst_esp_catch_probe(struct openconnect_info *vpninfo, struct pkt *pkt);
 
@@ -925,16 +969,18 @@ int load_pkcs11_certificate(struct openconnect_info *vpninfo);
 int verify_packet_seqno(struct openconnect_info *vpninfo,
 			struct esp *esp, uint32_t seq);
 int esp_setup(struct openconnect_info *vpninfo, int dtls_attempt_period);
-int esp_mainloop(struct openconnect_info *vpninfo, int *timeout);
+int esp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 void esp_close(struct openconnect_info *vpninfo);
 void esp_shutdown(struct openconnect_info *vpninfo);
 int print_esp_keys(struct openconnect_info *vpninfo, const char *name, struct esp *esp);
+int openconnect_setup_esp_keys(struct openconnect_info *vpninfo, int new_keys);
+int construct_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt, uint8_t next_hdr);
 
 /* {gnutls,openssl}-esp.c */
-int setup_esp_keys(struct openconnect_info *vpninfo, int new_keys);
 void destroy_esp_ciphers(struct esp *esp);
+int init_esp_ciphers(struct openconnect_info *vpninfo, struct esp *out, struct esp *in);
 int decrypt_esp_packet(struct openconnect_info *vpninfo, struct esp *esp, struct pkt *pkt);
-int encrypt_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt);
+int encrypt_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt, int crypt_len);
 
 /* {gnutls,openssl}.c */
 int ssl_nonblock_read(struct openconnect_info *vpninfo, void *buf, int maxlen);
@@ -963,7 +1009,7 @@ int hotp_hmac(struct openconnect_info *vpninfo, const void *challenge);
 #endif
 
 /* mainloop.c */
-int tun_mainloop(struct openconnect_info *vpninfo, int *timeout);
+int tun_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 int queue_new_packet(struct pkt_q *q, void *buf, int len);
 int keepalive_action(struct keepalive_info *ka, int *timeout);
 int ka_stalled_action(struct keepalive_info *ka, int *timeout);

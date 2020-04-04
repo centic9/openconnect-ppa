@@ -534,7 +534,8 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 					vpninfo->ip_info.netmask6 = new_option->value;
 			} else
 				vpninfo->ip_info.netmask = new_option->value;
-		} else if (!strcmp(buf + 7, "DNS")) {
+		} else if (!strcmp(buf + 7, "DNS") ||
+			   !strcmp(buf + 7, "DNS-IP6")) {
 			int j;
 			for (j = 0; j < 3; j++) {
 				if (!vpninfo->ip_info.dns[j]) {
@@ -604,7 +605,8 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different Legacy IP address (%s != %s)\n"),
 				     vpninfo->ip_info.addr, old_addr);
-			return -EINVAL;
+			/* EPERM means that the retry loop will abort and won't keep trying. */
+			return -EPERM;
 		}
 	}
 	if (old_netmask) {
@@ -612,7 +614,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different Legacy IP netmask (%s != %s)\n"),
 				     vpninfo->ip_info.netmask, old_netmask);
-			return -EINVAL;
+			return -EPERM;
 		}
 	}
 	if (old_addr6) {
@@ -620,7 +622,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different IPv6 address (%s != %s)\n"),
 				     vpninfo->ip_info.addr6, old_addr6);
-			return -EINVAL;
+			return -EPERM;
 		}
 	}
 	if (old_netmask6) {
@@ -628,7 +630,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different IPv6 netmask (%s != %s)\n"),
 				     vpninfo->ip_info.netmask6, old_netmask6);
-			return -EINVAL;
+			return -EPERM;
 		}
 	}
 
@@ -894,7 +896,7 @@ int compress_packet(struct openconnect_info *vpninfo, int compr_type, struct pkt
 	return 0;
 }
 
-int cstp_mainloop(struct openconnect_info *vpninfo, int *timeout)
+int cstp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 {
 	int ret;
 	int work_done = 0;
@@ -908,7 +910,7 @@ int cstp_mainloop(struct openconnect_info *vpninfo, int *timeout)
 	   we should probably remove POLLIN from the events we're looking for,
 	   and add POLLOUT. As it is, though, it'll just chew CPU time in that
 	   fairly unlikely situation, until the write backlog clears. */
-	while (1) {
+	while (readable) {
 		/* Some servers send us packets that are larger than
 		   negotiated MTU. We reserve some extra space to
 		   handle that */
