@@ -1,3 +1,9 @@
+openconnect (8.05-1ubuntu0~ppa1) bionic; urgency=medium
+
+  * Backport to bionic
+
+ -- Dominik Stadler (Ubuntu key) <dominik.stadler@gmx.at>  Sat, 04 Apr 2020 08:41:05 +0200
+
 openconnect (8.05-1) unstable; urgency=medium
 
   [ Debian Janitor ]
