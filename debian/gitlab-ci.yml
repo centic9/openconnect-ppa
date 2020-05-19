@@ -3,4 +3,7 @@ include:
  - https://salsa.debian.org/salsa-ci-team/pipeline/raw/master/pipeline-jobs.yml
 
 variables:
- RELEASE: 'unstable'
+ RELEASE: 'buster-backports'
+ SALSA_CI_DISABLE_VERSION_BUMP: 'true'
+ SALSA_CI_LINTIAN_SUPPRESS_TAGS: "backports-changes-missing,newer-standards-version"
+ SALSA_CI_DISABLE_PIUPARTS: 1

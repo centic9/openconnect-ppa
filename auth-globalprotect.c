@@ -17,6 +17,7 @@
 
 #include <config.h>
 
+#include <ctype.h>
 #include <errno.h>
 
 #include <libxml/parser.h>
@@ -60,13 +61,14 @@ const char *gpst_os_name(struct openconnect_info *vpninfo)
 /* Parse pre-login response ({POST,GET} /{global-protect,ssl-vpn}/pre-login.esp)
  *
  * Extracts the relevant arguments from the XML (username-label, password-label)
- * and uses them to build an auth form, which always has two visible fields:
+ * and uses them to build an auth form, which always has 2-3 fields:
  *
- *   1) username
+ *   1) username (hidden in challenge forms, since it's simply repeated)
  *   2) one secret value:
  *       - normal account password
- *       - "challenge" (2FA) password, along with form name in auth_id
+ *       - "challenge" (2FA) password
  *       - cookie from external authentication flow ("alternative secret" INSTEAD OF password)
+ *   3) inputStr for challenge form (shoehorned into form->action)
  *
  */
 static int parse_prelogin_xml(struct openconnect_info *vpninfo, xmlNode *xml_node, void *cb_data)
@@ -85,6 +87,7 @@ static int parse_prelogin_xml(struct openconnect_info *vpninfo, xmlNode *xml_nod
 		char *s = NULL;
 		if (!xmlnode_get_val(xml_node, "saml-request", &s)) {
 			int len;
+			free(saml_path);
 			saml_path = openconnect_base64_decode(&len, s);
 			if (len < 0) {
 				vpn_progress(vpninfo, PRG_ERR, "Could not decode SAML request as base64: %s\n", s);
@@ -93,7 +96,11 @@ static int parse_prelogin_xml(struct openconnect_info *vpninfo, xmlNode *xml_nod
 				goto out;
 			}
 			free(s);
-			saml_path = realloc(saml_path, len+1);
+			realloc_inplace(saml_path, len+1);
+			if (!saml_path) {
+				result = -ENOMEM;
+				goto out;
+			}
 			saml_path[len] = '\0';
 		} else {
 			xmlnode_get_val(xml_node, "saml-auth-method", &saml_method);
@@ -105,11 +112,23 @@ static int parse_prelogin_xml(struct openconnect_info *vpninfo, xmlNode *xml_nod
 	}
 
 	/* XX: Alt-secret form field must be specified for SAML, because we can't autodetect it */
-	if ((saml_method || saml_path) && !ctx->alt_secret) {
-		vpn_progress(vpninfo, PRG_ERR, "SAML authentication via %s to %s is required.\n"
-					 "Must specify destination form field by appending :field_name to login URL.\n",
-					 saml_method, saml_path);
-		result = -EINVAL;
+	if (saml_method || saml_path) {
+		if (!ctx->alt_secret) {
+			if (saml_method && !strcmp(saml_method, "REDIRECT"))
+				vpn_progress(vpninfo, PRG_ERR,
+				             _("SAML %s authentication is required via %s\n"),
+				             saml_method, saml_path);
+			else
+				vpn_progress(vpninfo, PRG_ERR,
+				             _("SAML %s authentication is required via external script.\n"),
+				             saml_method);
+			vpn_progress(vpninfo, PRG_ERR,
+			             _("When SAML authentication is complete, specify destination form field by appending :field_name to login URL.\n"));
+			result = -EINVAL;
+			goto out;
+		} else
+			vpn_progress(vpninfo, PRG_DEBUG, _("Destination form field %s was specified; assuming SAML %s authentication is complete.\n"),
+			             saml_method, ctx->alt_secret);
 	}
 
 	/* Replace old form */
@@ -121,8 +140,6 @@ static int parse_prelogin_xml(struct openconnect_info *vpninfo, xmlNode *xml_nod
 		result = -ENOMEM;
 		goto out;
 	}
-	if (saml_path && asprintf(&form->banner, _("SAML login is required via %s to this URL:\n\t%s"), saml_method, saml_path) == 0)
-		goto nomem;
 	form->message = prompt ? : strdup(_("Please enter your username and password"));
 	prompt = NULL;
 	form->auth_id = strdup("_login");
@@ -152,17 +169,22 @@ static int parse_prelogin_xml(struct openconnect_info *vpninfo, xmlNode *xml_nod
 
 	/* XX: Some VPNs use a password in the first form, followed by a
 	 * a token in the second ("challenge") form. Others use only a
-	 * token. How can we distinguish these? */
-	if (!can_gen_tokencode(vpninfo, form, opt2))
+	 * token. How can we distinguish these?
+	 *
+	 * Currently using the heuristic that a non-default label for the
+	 * password in the first form means we should treat the first
+	 * form's password as a token field.
+	 */
+	if (!can_gen_tokencode(vpninfo, form, opt2) && !ctx->alt_secret
+	    && password_label && strcmp(password_label, "Password"))
 		opt2->type = OC_FORM_OPT_TOKEN;
 	else
 		opt2->type = OC_FORM_OPT_PASSWORD;
 
-	vpn_progress(vpninfo, PRG_TRACE, "%s%s: \"%s\" %s(%s)=%s, \"%s\" %s(%s)\n",
-				 form->auth_id[0] == '_' ? "Login form" : "Challenge form ",
-				 form->auth_id[0] != '_' ? form->auth_id : "",
-				 opt->label, opt->name, opt->type == OC_FORM_OPT_TEXT ? "TEXT" : "HIDDEN", opt->_value,
-				 opt2->label, opt2->name, opt2->type == OC_FORM_OPT_PASSWORD ? "PASSWORD" : "TOKEN");
+	vpn_progress(vpninfo, PRG_TRACE, "Prelogin form %s: \"%s\" %s(%s)=%s, \"%s\" %s(%s)\n",
+	             form->auth_id,
+	             opt->label, opt->name, opt->type == OC_FORM_OPT_TEXT ? "TEXT" : "HIDDEN", opt->_value,
+	             opt2->label, opt2->name, opt2->type == OC_FORM_OPT_PASSWORD ? "PASSWORD" : "TOKEN");
 
 out:
 	free(prompt);
@@ -187,23 +209,58 @@ static int challenge_cb(struct openconnect_info *vpninfo, char *prompt, char *in
 	 */
 	free(form->message);
 	free(form->auth_id);
+	free(form->action);
 	free(opt2->label);
 	free(opt2->_value);
 	opt2->_value = NULL;
 	opt->type = OC_FORM_OPT_HIDDEN;
 
+	/* XX: Some VPNs use a password in the first form, followed by a
+	 * a token in the second ("challenge") form. Others use only a
+	 * token. How can we distinguish these?
+	 *
+	 * Currently using the heuristic that if the password field in
+	 * the preceding form wasn't treated as a token field, treat this
+	 * as a token field.
+        */
+	if (!can_gen_tokencode(vpninfo, form, opt2) && opt2->type == OC_FORM_OPT_PASSWORD)
+		opt2->type = OC_FORM_OPT_TOKEN;
+	else
+		opt2->type = OC_FORM_OPT_PASSWORD;
+
 	if (    !(form->message = strdup(prompt))
-		 || !(form->auth_id = strdup(inputStr))
+		 || !(form->action = strdup(inputStr))
+		 || !(form->auth_id = strdup("_challenge"))
 		 || !(opt2->label = strdup(_("Challenge: "))) )
 		return -ENOMEM;
 
-	vpn_progress(vpninfo, PRG_TRACE, "%s%s: \"%s\" %s(%s)=%s, \"%s\" %s(%s)\n",
-				 form->auth_id[0] == '_' ? "Login form" : "Challenge form ",
-				 form->auth_id[0] != '_' ? form->auth_id : "",
-				 opt->label, opt->name, opt->type == OC_FORM_OPT_TEXT ? "TEXT" : "HIDDEN", opt->_value,
-				 opt2->label, opt2->name, opt2->type == OC_FORM_OPT_PASSWORD ? "PASSWORD" : "TOKEN");
+	vpn_progress(vpninfo, PRG_TRACE, "Challenge form %s: \"%s\" %s(%s)=%s, \"%s\" %s(%s), inputStr=%s\n",
+	             form->auth_id,
+	             opt->label, opt->name, opt->type == OC_FORM_OPT_TEXT ? "TEXT" : "HIDDEN", opt->_value,
+	             opt2->label, opt2->name, opt2->type == OC_FORM_OPT_PASSWORD ? "PASSWORD" : "TOKEN",
+	             inputStr);
 
 	return -EAGAIN;
+}
+
+static int urldecode_inplace(char *p)
+{
+	char *q;
+	if (!p)
+		return -EINVAL;
+
+	for (q = p; *p; p++, q++) {
+		if (*p == '+') {
+			*q = ' ';
+		} else if (*p == '%' && isxdigit((int)(unsigned char)p[1]) &&
+			   isxdigit((int)(unsigned char)p[2])) {
+			*q = unhex(p + 1);
+			p += 2;
+		} else
+			*q = *p;
+	}
+	*q = 0;
+	return 0;
 }
 
 /* Parse gateway login response (POST /ssl-vpn/login.esp)
@@ -219,10 +276,11 @@ struct gp_login_arg {
 	unsigned show:1;
 	unsigned warn_missing:1;
 	unsigned err_missing:1;
+	unsigned unknown:1;
 	const char *check;
 };
 static const struct gp_login_arg gp_login_args[] = {
-	{ .opt="unknown-arg0", .show=1 },
+	{ .unknown=1 },                                 /* seemingly always empty */
 	{ .opt="authcookie", .save=1, .err_missing=1 },
 	{ .opt="persistent-cookie", .warn_missing=1 },  /* 40 hex digits; persists across sessions */
 	{ .opt="portal", .save=1, .warn_missing=1 },
@@ -230,22 +288,28 @@ static const struct gp_login_arg gp_login_args[] = {
 	{ .opt="authentication-source", .show=1 },      /* LDAP-auth, AUTH-RADIUS_RSA_OTP, etc. */
 	{ .opt="configuration", .warn_missing=1 },      /* usually vsys1 (sometimes vsys2, etc.) */
 	{ .opt="domain", .save=1, .warn_missing=1 },
-	{ .opt="unknown-arg8", .show=1 },
-	{ .opt="unknown-arg9", .show=1 },
-	{ .opt="unknown-arg10", .show=1 },
-	{ .opt="unknown-arg11", .show=1 },
+	{ .unknown=1 },                                 /* 4 arguments, seemingly always empty */
+	{ .unknown=1 },
+	{ .unknown=1 },
+	{ .unknown=1 },
 	{ .opt="connection-type", .err_missing=1, .check="tunnel" },
 	{ .opt="password-expiration-days", .show=1 },   /* days until password expires, if not -1 */
 	{ .opt="clientVer", .err_missing=1, .check="4100" },
 	{ .opt="preferred-ip", .save=1 },
-	{ .opt=NULL },
+	{ .opt="portal-userauthcookie", .show=1},
+	{ .opt="portal-prelogonuserauthcookie", .show=1},
+	{ .unknown=1 },
+	{ .opt="usually-equals-4", .show=1 },           /* newer servers send "4" here, meaning unknown */
+	{ .opt="usually-equals-unknown", .show=1 },     /* newer servers send "unknown" here */
 };
+static const int gp_login_nargs = (sizeof(gp_login_args)/sizeof(*gp_login_args));
 
 static int parse_login_xml(struct openconnect_info *vpninfo, xmlNode *xml_node, void *cb_data)
 {
 	struct oc_text_buf *cookie = buf_alloc();
 	char *value = NULL;
 	const struct gp_login_arg *arg;
+	int argn, unknown_args = 0, fatal_args = 0;
 
 	if (!xmlnode_is_named(xml_node, "jnlp"))
 		goto err_out;
@@ -254,47 +318,76 @@ static int parse_login_xml(struct openconnect_info *vpninfo, xmlNode *xml_node, 
 	while (xml_node && xml_node->type != XML_ELEMENT_NODE)
 		xml_node = xml_node->next;
 
-	if (!xmlnode_is_named(xml_node, "application-desc"))
+	if (!xml_node || !xmlnode_is_named(xml_node, "application-desc"))
 		goto err_out;
 
 	xml_node = xml_node->children;
-	for (arg = gp_login_args; arg->opt; arg++) {
+	/* XXX: Loop as long as there are EITHER more known arguments OR more XML tags,
+	 * so that we catch both more-than-expected and fewer-than-expected arguments. */
+	for (argn = 0; argn < gp_login_nargs || xml_node; argn++) {
 		while (xml_node && xml_node->type != XML_ELEMENT_NODE)
 			xml_node = xml_node->next;
 
-		if (xml_node && !xmlnode_get_val(xml_node, "argument", &value)) {
+		if (!xml_node)
+			value = NULL;
+		else if (!xmlnode_get_val(xml_node, "argument", &value)) {
 			if (value && (!value[0] || !strcmp(value, "(null)") || !strcmp(value, "-1"))) {
 				free(value);
 				value = NULL;
+			} else {
+				/* XX: The usage of URL encoding in the fields sent by GP servers here is
+				 * inconsistent, but in particular the value "%28empty_domain%29" keeps popping up
+				 * in places where the server expects "(empty_domain)" (like the stupidly redundant
+				 * logout operation). So we do this to be safe and to ensure logout succeeds.
+				 */
+				urldecode_inplace(value);
 			}
 			xml_node = xml_node->next;
-		} else if (xml_node)
+		} else
 			goto err_out;
 
-		if (arg->check && (!value || strcmp(value, arg->check))) {
-			vpn_progress(vpninfo, arg->err_missing ? PRG_ERR : PRG_DEBUG,
-				     _("GlobalProtect login returned %s=%s (expected %s)\n"),
-				     arg->opt, value, arg->check);
-			if (arg->err_missing)
-				goto err_out;
+		/* XX: argument 0 is unknown so we reuse this for extra arguments */
+		arg = &gp_login_args[(argn < gp_login_nargs) ? argn : 0];
+
+		if (arg->unknown && value) {
+			unknown_args++;
+			vpn_progress(vpninfo, PRG_ERR,
+						 _("GlobalProtect login returned unexpected argument value arg[%d]=%s\n"),
+						 argn, value);
+		} else if (arg->check && (!value || strcmp(value, arg->check))) {
+			unknown_args++;
+			fatal_args += arg->err_missing;
+            vpn_progress(vpninfo, PRG_ERR,
+			             _("GlobalProtect login returned %s=%s (expected %s)\n"),
+			             arg->opt, value, arg->check);
 		} else if ((arg->err_missing || arg->warn_missing) && !value) {
-			vpn_progress(vpninfo, arg->err_missing ? PRG_ERR : PRG_DEBUG,
-				     _("GlobalProtect login returned empty or missing %s\n"),
-				     arg->opt);
-			if (arg->err_missing)
-				goto err_out;
+			unknown_args++;
+			fatal_args += arg->err_missing;
+			vpn_progress(vpninfo, PRG_ERR,
+			             _("GlobalProtect login returned empty or missing %s\n"),
+			             arg->opt);
 		} else if (value && arg->show) {
 			vpn_progress(vpninfo, PRG_INFO,
-				     _("GlobalProtect login returned %s=%s\n"),
-				     arg->opt, value);
+			             _("GlobalProtect login returned %s=%s\n"),
+			             arg->opt, value);
 		}
 
 		if (value && arg->save)
 			append_opt(cookie, arg->opt, value);
+
 		free(value);
 		value = NULL;
 	}
 	append_opt(cookie, "computer", vpninfo->localname);
+
+	if (unknown_args)
+		vpn_progress(vpninfo, PRG_ERR,
+					 _("Please report %d unexpected values above (of which %d fatal) to <openconnect-devel@lists.infradead.org>\n"),
+					 unknown_args, fatal_args);
+	if (fatal_args) {
+		buf_free(cookie);
+		return -EPERM;
+	}
 
 	if (!buf_error(cookie)) {
 		vpninfo->cookie = cookie->data;
@@ -318,11 +411,12 @@ err_out:
 static int parse_portal_xml(struct openconnect_info *vpninfo, xmlNode *xml_node, void *cb_data)
 {
 	struct oc_auth_form *form;
-	xmlNode *x = NULL;
+	xmlNode *x, *x2, *x3, *gateways = NULL;
 	struct oc_form_opt_select *opt;
 	struct oc_text_buf *buf = NULL;
 	int max_choices = 0, result;
 	char *portal = NULL;
+	char *hip_interval = NULL;
 
 	form = calloc(1, sizeof(*form));
 	if (!form)
@@ -344,29 +438,42 @@ static int parse_portal_xml(struct openconnect_info *vpninfo, xmlNode *xml_node,
 	/*
 	 * The portal contains a ton of stuff, but basically none of it is
 	 * useful to a VPN client that wishes to give control to the client
-	 * user, as opposed to the VPN administrator.  The exception is the
-	 * list of gateways in policy/gateways/external/list
+	 * user, as opposed to the VPN administrator.  The exceptions are the
+	 * list of gateways in policy/gateways/external/list and the interval
+	 * for HIP checks in policy/hip-collection/hip-report-interval
 	 */
 	if (xmlnode_is_named(xml_node, "policy")) {
-		for (x = xml_node->children, xml_node = NULL; x; x = x->next) {
-			if (xmlnode_is_named(x, "gateways"))
-				xml_node = x;
-			else
+		for (x = xml_node->children; x; x = x->next) {
+			if (xmlnode_is_named(x, "gateways")) {
+				for (x2 = x->children; x2; x2 = x2->next)
+					if (xmlnode_is_named(x2, "external"))
+						for (x3 = x2->children; x3; x3 = x3->next)
+							if (xmlnode_is_named(x3, "list"))
+							    gateways = x3;
+			} else if (xmlnode_is_named(x, "hip-collection")) {
+				for (x2 = x->children; x2; x2 = x2->next) {
+					if (!xmlnode_get_val(x2, "hip-report-interval", &hip_interval)) {
+						int sec = atoi(hip_interval);
+						if (vpninfo->trojan_interval)
+							vpn_progress(vpninfo, PRG_INFO, _("Ignoring portal's HIP report interval (%d minutes), because interval is already set to %d minutes.\n"),
+										 sec/60, vpninfo->trojan_interval/60);
+						else {
+							vpninfo->trojan_interval = sec - 60;
+							vpn_progress(vpninfo, PRG_INFO, _("Portal set HIP report interval to %d minutes).\n"),
+										 sec/60);
+						}
+					}
+				}
+			} else
 				xmlnode_get_val(x, "portal-name", &portal);
 		}
 	}
 
-	if (xml_node) {
-		for (xml_node = xml_node->children; xml_node; xml_node = xml_node->next)
-			if (xmlnode_is_named(xml_node, "external"))
-				for (xml_node = xml_node->children; xml_node; xml_node = xml_node->next)
-					if (xmlnode_is_named(xml_node, "list"))
-						goto gateways;
+	if (!gateways) {
+		result = -EINVAL;
+		goto out;
 	}
-	result = -EINVAL;
-	goto out;
 
-gateways:
 	if (vpninfo->write_new_config) {
 		buf = buf_alloc();
 		buf_append(buf, "<GPPortal>\n  <ServerList>\n");
@@ -381,7 +488,7 @@ gateways:
 	}
 
 	/* first, count the number of gateways */
-	for (x = xml_node->children; x; x = x->next)
+	for (x = gateways->children; x; x = x->next)
 		if (xmlnode_is_named(x, "entry"))
 			max_choices++;
 
@@ -393,17 +500,17 @@ gateways:
 
 	/* each entry looks like <entry name="host[:443]"><description>Label</description></entry> */
 	vpn_progress(vpninfo, PRG_INFO, _("%d gateway servers available:\n"), max_choices);
-	for (xml_node = xml_node->children; xml_node; xml_node = xml_node->next) {
-		if (xmlnode_is_named(xml_node, "entry")) {
+	for (x = gateways->children; x; x = x->next) {
+		if (xmlnode_is_named(x, "entry")) {
 			struct oc_choice *choice = calloc(1, sizeof(*choice));
 			if (!choice) {
 				result = -ENOMEM;
 				goto out;
 			}
 
-			xmlnode_get_prop(xml_node, "name", &choice->name);
-			for (x = xml_node->children; x; x=x->next)
-				if (!xmlnode_get_val(x, "description", &choice->label)) {
+			xmlnode_get_prop(x, "name", &choice->name);
+			for (x2 = x->children; x2; x2=x2->next)
+				if (!xmlnode_get_val(x2, "description", &choice->label)) {
 					if (vpninfo->write_new_config) {
 						buf_append(buf, "      <HostEntry><HostName>");
 						buf_append_xmlescaped(buf, choice->label);
@@ -416,6 +523,12 @@ gateways:
 			vpn_progress(vpninfo, PRG_INFO, _("  %s (%s)\n"),
 				     choice->label, choice->name);
 		}
+	}
+	if (!opt->nr_choices) {
+		vpn_progress(vpninfo, PRG_ERR,
+					 _("GlobalProtect portal configuration lists no gateway servers.\n"));
+		result = -EINVAL;
+		goto out;
 	}
 	if (!vpninfo->authgroup && opt->nr_choices)
 		vpninfo->authgroup = strdup(opt->choices[0]->name);
@@ -444,6 +557,7 @@ gateways:
 out:
 	buf_free(buf);
 	free(portal);
+	free(hip_interval);
 	free_auth_form(form);
 	return result;
 }
@@ -504,8 +618,8 @@ static int gpst_login(struct openconnect_info *vpninfo, int portal, struct login
 		append_opt(request_body, "computer", vpninfo->localname);
 		if (vpninfo->ip_info.addr)
 			append_opt(request_body, "preferred-ip", vpninfo->ip_info.addr);
-		if (ctx->form->auth_id && ctx->form->auth_id[0]!='_')
-			append_opt(request_body, "inputStr", ctx->form->auth_id);
+		if (ctx->form->action)
+			append_opt(request_body, "inputStr", ctx->form->action);
 		append_form_opts(vpninfo, ctx->form, request_body);
 		if ((result = buf_error(request_body)))
 			goto out;
@@ -542,7 +656,7 @@ static int gpst_login(struct openconnect_info *vpninfo, int portal, struct login
 				 * unless it was a challenge auth form or alt-secret form.
 				 */
 				portal = 0;
-				if (ctx->form->auth_id[0] == '_' && ctx->alt_secret) {
+				if (ctx->form->auth_id[0] == '_' && !ctx->alt_secret) {
 					blind_retry = 1;
 					goto replay_form;
 				}
@@ -580,10 +694,10 @@ int gpst_obtain_cookie(struct openconnect_info *vpninfo)
 		/* assume the server is a gateway */
 		result = gpst_login(vpninfo, 0, &ctx);
 	} else {
-		/* first try handling it as a gateway, then a portal */
-		result = gpst_login(vpninfo, 0, &ctx);
+		/* first try handling it as a portal, then a gateway */
+		result = gpst_login(vpninfo, 1, &ctx);
 		if (result == -EEXIST) {
-			result = gpst_login(vpninfo, 1, &ctx);
+			result = gpst_login(vpninfo, 0, &ctx);
 			if (result == -EEXIST)
 				vpn_progress(vpninfo, PRG_ERR, _("Server is neither a GlobalProtect portal nor a gateway.\n"));
 		}
@@ -639,7 +753,7 @@ int gpst_bye(struct openconnect_info *vpninfo, const char *reason)
 	if (result < 0)
 		vpn_progress(vpninfo, PRG_ERR, _("Logout failed.\n"));
 	else
-		vpn_progress(vpninfo, PRG_INFO, _("Logout successful\n"));
+		vpn_progress(vpninfo, PRG_INFO, _("Logout successful.\n"));
 
 out:
 	buf_free(request_body);

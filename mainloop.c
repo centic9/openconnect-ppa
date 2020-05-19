@@ -303,7 +303,13 @@ int openconnect_mainloop(struct openconnect_info *vpninfo,
 		tv.tv_sec = timeout / 1000;
 		tv.tv_usec = (timeout % 1000) * 1000;
 
-		select(vpninfo->_select_nfds, &rfds, &wfds, &efds, &tv);
+		if (select(vpninfo->_select_nfds, &rfds, &wfds, &efds, &tv) < 0 &&
+		    errno != EINTR) {
+			ret = -errno;
+			vpn_perror(vpninfo, _("Failed select() in mainloop"));
+			break;
+		}
+
 		if (vpninfo->tun_fd >= 0)
 			tun_r = FD_ISSET(vpninfo->tun_fd, &rfds);
 		if (vpninfo->dtls_fd >= 0)
@@ -391,4 +397,18 @@ int keepalive_action(struct keepalive_info *ka, int *timeout)
 		return KA_KEEPALIVE;
 
 	return KA_NONE;
+}
+
+int trojan_check_deadline(struct openconnect_info *vpninfo, int *timeout)
+{
+	time_t now = time(NULL);
+
+	if (vpninfo->trojan_interval &&
+	    ka_check_deadline(timeout, now,
+			      vpninfo->last_trojan + vpninfo->trojan_interval)) {
+		vpninfo->last_trojan = now;
+		return 1;
+	} else {
+		return 0;
+	}
 }

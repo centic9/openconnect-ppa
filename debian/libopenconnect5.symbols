@@ -6,6 +6,7 @@ libopenconnect.so.5 libopenconnect5 #MINVER#
  OPENCONNECT_5_3@OPENCONNECT_5_3 7.07
  OPENCONNECT_5_4@OPENCONNECT_5_4 7.08
  OPENCONNECT_5_5@OPENCONNECT_5_5 8.01
+ OPENCONNECT_5_6@OPENCONNECT_5_6 8.06
  OPENCONNECT_PRIVATE@OPENCONNECT_PRIVATE 6.00
  openconnect_check_peer_cert_hash@OPENCONNECT_5.0 7.00
  openconnect_clear_cookie@OPENCONNECT_5.0 7.00
@@ -31,6 +32,7 @@ libopenconnect.so.5 libopenconnect5 #MINVER#
  openconnect_get_port@OPENCONNECT_5.0 7.00
  openconnect_get_protocol@OPENCONNECT_5_5 8.01
  openconnect_get_supported_protocols@OPENCONNECT_5_5 8.01
+ openconnect_get_tls_library_version@OPENCONNECT_PRIVATE 8.06
  openconnect_get_urlpath@OPENCONNECT_5.0 7.00
  openconnect_get_version@OPENCONNECT_5.0 7.00
  openconnect_has_oath_support@OPENCONNECT_5.0 7.00
@@ -48,6 +50,7 @@ libopenconnect.so.5 libopenconnect5 #MINVER#
  openconnect_override_getaddrinfo@OPENCONNECT_5_3 7.07
  openconnect_parse_url@OPENCONNECT_5.0 7.00
  openconnect_passphrase_from_fsid@OPENCONNECT_5.0 7.00
+ openconnect_read_file@OPENCONNECT_PRIVATE 8.06
  openconnect_reset_ssl@OPENCONNECT_5.0 7.00
  openconnect_set_cafile@OPENCONNECT_5.0 7.00
  openconnect_set_cancel_fd@OPENCONNECT_5.0 7.00
@@ -78,6 +81,7 @@ libopenconnect.so.5 libopenconnect5 #MINVER#
  openconnect_set_system_trust@OPENCONNECT_5.0 7.00
  openconnect_set_token_callbacks@OPENCONNECT_5.0 7.00
  openconnect_set_token_mode@OPENCONNECT_5.0 7.00
+ openconnect_set_trojan_interval@OPENCONNECT_5_6 8.06
  openconnect_set_urlpath@OPENCONNECT_5.0 7.00
  openconnect_set_version_string@OPENCONNECT_5_5 8.01
  openconnect_set_xmlpost@OPENCONNECT_5.0 7.00

@@ -223,8 +223,9 @@ struct oc_text_buf {
 #define AUTH_TYPE_NTLM		1
 #define AUTH_TYPE_DIGEST	2
 #define AUTH_TYPE_BASIC		3
+#define AUTH_TYPE_BEARER	4
 
-#define MAX_AUTH_TYPES		4
+#define MAX_AUTH_TYPES		5
 
 #define AUTH_DEFAULT_DISABLED	-3
 #define AUTH_DISABLED		-2
@@ -419,6 +420,7 @@ struct openconnect_info {
 	int proxy_fd;
 	char *proxy_user;
 	char *proxy_pass;
+	char *bearer_token;
 	int proxy_close_during_auth;
 	int retry_on_auth_fail;
 	int try_http_auth;
@@ -444,6 +446,8 @@ struct openconnect_info {
 	char *dtls_ciphers;
 	char *dtls12_ciphers;
 	char *csd_wrapper;
+	int trojan_interval;
+	time_t last_trojan;
 	int no_http_keepalive;
 	int dump_http_traffic;
 
@@ -521,7 +525,6 @@ struct openconnect_info {
 	gnutls_certificate_credentials_t https_cred;
 	gnutls_psk_client_credentials_t psk_cred;
 	char local_cert_md5[MD5_SIZE * 2 + 1]; /* For CSD */
-	char gnutls_prio[256];
 #ifdef HAVE_TROUSERS
 	struct oc_tpm1_ctx *tpm1;
 #endif
@@ -529,11 +532,13 @@ struct openconnect_info {
 	struct oc_tpm2_ctx *tpm2;
 #endif
 #endif /* OPENCONNECT_GNUTLS */
+	char ciphersuite_config[256];
 	struct oc_text_buf *ttls_pushbuf;
 	uint8_t ttls_eap_ident;
 	unsigned char *ttls_recvbuf;
 	int ttls_recvpos;
 	int ttls_recvlen;
+	uint32_t ttls_msgleft;
 
 	struct pin_cache *pin_cache;
 	struct keepalive_info ssl_times;
@@ -570,9 +575,9 @@ struct openconnect_info {
 	   NULL or not or pass it to DTLS_SEND/DTLS_RECV. This way we
 	   have fewer ifdefs and accessor macros for it. */
 	gnutls_session_t dtls_ssl;
-	char *gnutls_dtls_cipher; /* cached for openconnect_get_dtls_cipher() */
 #endif
-	char *cstp_cipher;
+	char *cstp_cipher; /* library-dependent description of TLS cipher */
+	char *dtls_cipher_desc; /* library-dependent description of DTLS cipher, cached for openconnect_get_dtls_cipher() */
 
 	int dtls_state;
 	int dtls_need_reconnect;
@@ -584,8 +589,9 @@ struct openconnect_info {
 
 	uint32_t ift_seq;
 
-	int cisco_dtls12;
-	char *dtls_cipher;
+	int cisco_dtls12; /* If Cisco server sent X-DTLS12-CipherSuite header, rather than X-DTLS-CipherSuite */
+	char *dtls_cipher; /* Value of aforementioned header (PSK-NEGOTIATE, or an OpenSSL cipher name) */
+
 	char *vpnc_script;
 #ifndef _WIN32
 	int uid_csd_given;
@@ -785,7 +791,16 @@ static inline int set_fd_cloexec(int fd)
 #ifdef _WIN32
 	return 0; /* Windows has O_INHERIT but... */
 #else
-	return fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+	int ret = fcntl(fd, F_SETFD, fcntl(fd, F_GETFD) | FD_CLOEXEC);
+	/*
+	 * Coverity gets really sad if we don't check the error here.
+	 * But really, we're doing this to be a 'good citizen' when
+	 * running as a library, and we aren't even going to bother
+	 * printing a debug message if it fails. We just don't care.
+	 */
+	if (ret)
+		return ret;
+	return 0;
 #endif
 }
 static inline int tun_is_up(struct openconnect_info *vpninfo)
@@ -865,6 +880,7 @@ void destroy_eap_ttls(struct openconnect_info *vpninfo, void *sess);
 
 /* dtls.c */
 int dtls_setup(struct openconnect_info *vpninfo, int dtls_attempt_period);
+int udp_tos_update(struct openconnect_info *vpninfo, struct pkt *pkt);
 int dtls_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable);
 void dtls_close(struct openconnect_info *vpninfo);
 void dtls_shutdown(struct openconnect_info *vpninfo);
@@ -886,6 +902,7 @@ int compress_packet(struct openconnect_info *vpninfo, int compr_type, struct pkt
 
 /* auth-juniper.c */
 int oncp_obtain_cookie(struct openconnect_info *vpninfo);
+int oncp_send_tncc_command(struct openconnect_info *vpninfo, int first);
 void oncp_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *buf);
 
 /* oncp.c */
@@ -950,6 +967,8 @@ int openconnect_open_utf8(struct openconnect_info *vpninfo,
 			  const char *fname, int mode);
 FILE *openconnect_fopen_utf8(struct openconnect_info *vpninfo,
 			     const char *fname, const char *mode);
+ssize_t openconnect_read_file(struct openconnect_info *vpninfo, const char *fname,
+			      char **ptr);
 int udp_sockaddr(struct openconnect_info *vpninfo, int port);
 int udp_connect(struct openconnect_info *vpninfo);
 int ssl_reconnect(struct openconnect_info *vpninfo);
@@ -983,6 +1002,7 @@ int decrypt_esp_packet(struct openconnect_info *vpninfo, struct esp *esp, struct
 int encrypt_esp_packet(struct openconnect_info *vpninfo, struct pkt *pkt, int crypt_len);
 
 /* {gnutls,openssl}.c */
+const char *openconnect_get_tls_library_version();
 int ssl_nonblock_read(struct openconnect_info *vpninfo, void *buf, int maxlen);
 int ssl_nonblock_write(struct openconnect_info *vpninfo, void *buf, int buflen);
 int openconnect_open_https(struct openconnect_info *vpninfo);
@@ -1014,15 +1034,14 @@ int queue_new_packet(struct pkt_q *q, void *buf, int len);
 int keepalive_action(struct keepalive_info *ka, int *timeout);
 int ka_stalled_action(struct keepalive_info *ka, int *timeout);
 int ka_check_deadline(int *timeout, time_t now, time_t due);
+int trojan_check_deadline(struct openconnect_info *vpninfo, int *timeout);
 
 /* xml.c */
-ssize_t read_file_into_string(struct openconnect_info *vpninfo, const char *fname,
-			      char **ptr);
 int config_lookup_host(struct openconnect_info *vpninfo, const char *host);
 
 /* oath.c */
-int set_totp_mode(struct openconnect_info *vpninfo, const char *token_str);
-int set_hotp_mode(struct openconnect_info *vpninfo, const char *token_str);
+int set_oath_mode(struct openconnect_info *vpninfo, const char *token_str,
+		  oc_token_mode_t token_mode);
 int can_gen_totp_code(struct openconnect_info *vpninfo,
 		      struct oc_auth_form *form,
 		      struct oc_form_opt *opt);
@@ -1035,6 +1054,9 @@ int do_gen_totp_code(struct openconnect_info *vpninfo,
 int do_gen_hotp_code(struct openconnect_info *vpninfo,
 		     struct oc_auth_form *form,
 		     struct oc_form_opt *opt);
+
+int set_oidc_token(struct openconnect_info *vpninfo, 
+		     const char *token_str);
 
 /* stoken.c */
 int prepare_stoken(struct openconnect_info *vpninfo);

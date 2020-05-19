@@ -110,7 +110,7 @@ err:
 	return NULL;
 }
 
-const struct vpn_proto openconnect_protos[] = {
+static const struct vpn_proto openconnect_protos[] = {
 	{
 		.name = "anyconnect",
 		.pretty_name = N_("Cisco AnyConnect or openconnect"),
@@ -132,7 +132,7 @@ const struct vpn_proto openconnect_protos[] = {
 		.name = "nc",
 		.pretty_name = N_("Juniper Network Connect"),
 		.description = N_("Compatible with Juniper Network Connect"),
-		.flags = OC_PROTO_PROXY | OC_PROTO_CSD | OC_PROTO_AUTH_CERT | OC_PROTO_AUTH_OTP,
+		.flags = OC_PROTO_PROXY | OC_PROTO_CSD | OC_PROTO_AUTH_CERT | OC_PROTO_AUTH_OTP | OC_PROTO_PERIODIC_TROJAN,
 		.vpn_close_session = oncp_bye,
 		.tcp_connect = oncp_connect,
 		.tcp_mainloop = oncp_mainloop,
@@ -151,7 +151,7 @@ const struct vpn_proto openconnect_protos[] = {
 		.name = "gp",
 		.pretty_name = N_("Palo Alto Networks GlobalProtect"),
 		.description = N_("Compatible with Palo Alto Networks (PAN) GlobalProtect SSL VPN"),
-		.flags = OC_PROTO_PROXY | OC_PROTO_CSD | OC_PROTO_AUTH_CERT | OC_PROTO_AUTH_OTP | OC_PROTO_AUTH_STOKEN,
+		.flags = OC_PROTO_PROXY | OC_PROTO_CSD | OC_PROTO_AUTH_CERT | OC_PROTO_AUTH_OTP | OC_PROTO_AUTH_STOKEN | OC_PROTO_PERIODIC_TROJAN,
 		.vpn_close_session = gpst_bye,
 		.tcp_connect = gpst_setup,
 		.tcp_mainloop = gpst_mainloop,
@@ -186,25 +186,32 @@ const struct vpn_proto openconnect_protos[] = {
 		.udp_catch_probe = oncp_esp_catch_probe,
 #endif
 	},
-	{ /* NULL */ }
 };
+
+#define NR_PROTOS (sizeof(openconnect_protos)/sizeof(*openconnect_protos))
 
 int openconnect_get_supported_protocols(struct oc_vpn_proto **protos)
 {
 	struct oc_vpn_proto *pr;
-	const struct vpn_proto *p;
+	int i;
 
-	*protos = pr = calloc(sizeof(openconnect_protos)/sizeof(*openconnect_protos), sizeof(*pr));
+        /* The original version of this function included an all-zero
+         * sentinel value at the end of the array, so we must continue
+         * to do so for ABI compatibility even though it's
+         * functionally redundant as a marker of the array's length,
+         * along with the explicit length in the return value.
+         */
+	*protos = pr = calloc(NR_PROTOS + 1, sizeof(*pr));
 	if (!pr)
 		return -ENOMEM;
 
-	for (p = openconnect_protos; p->name; p++, pr++) {
-		pr->name = p->name;
-		pr->pretty_name = _(p->pretty_name);
-		pr->description = _(p->description);
-		pr->flags = p->flags;
+	for (i = 0; i < NR_PROTOS; i++) {
+		pr[i].name = openconnect_protos[i].name;
+		pr[i].pretty_name = _(openconnect_protos[i].pretty_name);
+		pr[i].description = _(openconnect_protos[i].description);
+		pr[i].flags = openconnect_protos[i].flags;
 	}
-	return (p - openconnect_protos);
+	return i;
 }
 
 void openconnect_free_supported_protocols(struct oc_vpn_proto *protos)
@@ -220,8 +227,10 @@ const char *openconnect_get_protocol(struct openconnect_info *vpninfo)
 int openconnect_set_protocol(struct openconnect_info *vpninfo, const char *protocol)
 {
 	const struct vpn_proto *p;
+	int i;
 
-	for (p = openconnect_protos; p->name; p++) {
+	for (i = 0; i < NR_PROTOS; i++) {
+		p = &openconnect_protos[i];
 		if (strcasecmp(p->name, protocol))
 			continue;
 		vpninfo->proto = p;
@@ -386,13 +395,19 @@ void openconnect_vpninfo_free(struct openconnect_info *vpninfo)
 	free(vpninfo->ifname);
 	free(vpninfo->dtls_cipher);
 	free(vpninfo->peer_cert_hash);
-#if defined(OPENCONNECT_OPENSSL) && defined (HAVE_BIO_METH_FREE)
+#if defined(OPENCONNECT_OPENSSL)
+	free(vpninfo->cstp_cipher);
+#if defined(HAVE_BIO_METH_FREE)
 	if (vpninfo->ttls_bio_meth)
 		BIO_meth_free(vpninfo->ttls_bio_meth);
-#elif defined(OPENCONNECT_GNUTLS)
-	gnutls_free(vpninfo->cstp_cipher); /* In OpenSSL this is const */
+#endif
 #ifdef HAVE_DTLS
-	gnutls_free(vpninfo->gnutls_dtls_cipher);
+	free(vpninfo->dtls_cipher_desc);
+#endif
+#elif defined(OPENCONNECT_GNUTLS)
+	gnutls_free(vpninfo->cstp_cipher);
+#ifdef HAVE_DTLS
+	gnutls_free(vpninfo->dtls_cipher_desc);
 #endif
 #endif
 	free(vpninfo->dtls_addr);
@@ -479,6 +494,7 @@ void openconnect_vpninfo_free(struct openconnect_info *vpninfo)
 	free(vpninfo->tun_pkt);
 	free(vpninfo->dtls_pkt);
 	free(vpninfo->cstp_pkt);
+	free(vpninfo->bearer_token);
 	free(vpninfo);
 }
 
@@ -575,6 +591,11 @@ void openconnect_set_dpd(struct openconnect_info *vpninfo, int min_seconds)
 		vpninfo->dtls_times.dpd = vpninfo->ssl_times.dpd = min_seconds;
 	else if (min_seconds == 1)
 		vpninfo->dtls_times.dpd = vpninfo->ssl_times.dpd = 2;
+}
+
+void openconnect_set_trojan_interval(struct openconnect_info *vpninfo, int seconds)
+{
+	vpninfo->trojan_interval = seconds;
 }
 
 int openconnect_get_idle_timeout(struct openconnect_info *vpninfo)
@@ -871,19 +892,20 @@ int openconnect_set_token_mode(struct openconnect_info *vpninfo,
 	case OC_TOKEN_MODE_NONE:
 		return 0;
 
+	case OC_TOKEN_MODE_TOTP:
+	case OC_TOKEN_MODE_HOTP:
+		return set_oath_mode(vpninfo, token_str, token_mode);
+
 #ifdef HAVE_LIBSTOKEN
 	case OC_TOKEN_MODE_STOKEN:
 		return set_libstoken_mode(vpninfo, token_str);
 #endif
-	case OC_TOKEN_MODE_TOTP:
-		return set_totp_mode(vpninfo, token_str);
-
-	case OC_TOKEN_MODE_HOTP:
-		return set_hotp_mode(vpninfo, token_str);
 #ifdef HAVE_LIBPCSCLITE
 	case OC_TOKEN_MODE_YUBIOATH:
 		return set_yubikey_mode(vpninfo, token_str);
 #endif
+	case OC_TOKEN_MODE_OIDC:
+		return set_oidc_token(vpninfo, token_str);
 	default:
 		return -EOPNOTSUPP;
 	}
@@ -1003,23 +1025,27 @@ const char *openconnect_get_dtls_compression(struct openconnect_info * vpninfo)
 
 const char *openconnect_get_dtls_cipher(struct openconnect_info *vpninfo)
 {
+	if (vpninfo->dtls_state != DTLS_CONNECTED || !vpninfo->dtls_ssl) {
 #if defined(OPENCONNECT_GNUTLS)
-	if (vpninfo->dtls_state != DTLS_CONNECTED) {
-		gnutls_free(vpninfo->gnutls_dtls_cipher);
-		vpninfo->gnutls_dtls_cipher = NULL;
+		gnutls_free(vpninfo->dtls_cipher_desc);
+#else
+		free(vpninfo->dtls_cipher_desc);
+#endif
+		vpninfo->dtls_cipher_desc = NULL;
 		return NULL;
 	}
 	/* in DTLS rehandshakes don't switch the ciphersuite as only
 	 * one is enabled. */
-	if (vpninfo->gnutls_dtls_cipher == NULL)
-		vpninfo->gnutls_dtls_cipher = get_gnutls_cipher(vpninfo->dtls_ssl);
-	return vpninfo->gnutls_dtls_cipher;
+	if (vpninfo->dtls_cipher_desc == NULL) {
+#if defined(OPENCONNECT_GNUTLS)
+        vpninfo->dtls_cipher_desc = get_gnutls_cipher(vpninfo->dtls_ssl);
 #else
-	if (vpninfo->dtls_ssl)
-		return SSL_get_cipher(vpninfo->dtls_ssl);
-	else
-		return NULL;
+		if (asprintf(&vpninfo->dtls_cipher_desc, "%s-%s",
+		             SSL_get_version(vpninfo->dtls_ssl), SSL_get_cipher_name(vpninfo->dtls_ssl)) < 0)
+			return NULL;
 #endif
+	}
+    return vpninfo->dtls_cipher_desc;
 }
 
 int openconnect_set_csd_environ(struct openconnect_info *vpninfo,
@@ -1065,26 +1091,29 @@ int openconnect_check_peer_cert_hash(struct openconnect_info *vpninfo,
 				     const char *old_hash)
 {
 	char *fingerprint = NULL;
-	unsigned min_match_len;
-	unsigned real_min_match_len = 4;
+	const unsigned min_match_len = 4;
 	unsigned old_len, fingerprint_len;
+	int case_sensitive = 0;
 	int ret = 0;
 
 	if (strchr(old_hash, ':')) {
+		/* These are hashes of the public key not the full cert. */
 		if (strncmp(old_hash, "sha1:", 5) == 0) {
-			fingerprint = openconnect_bin2hex("sha1:", vpninfo->peer_cert_sha1_raw, sizeof(vpninfo->peer_cert_sha1_raw));
-			min_match_len = real_min_match_len + sizeof("sha1:")-1;
+			old_hash += 5;
+			fingerprint = openconnect_bin2hex(NULL, vpninfo->peer_cert_sha1_raw, sizeof(vpninfo->peer_cert_sha1_raw));
 		} else if (strncmp(old_hash, "sha256:", 7) == 0) {
-			fingerprint = openconnect_bin2hex("sha256:", vpninfo->peer_cert_sha256_raw, sizeof(vpninfo->peer_cert_sha256_raw));
-			min_match_len = real_min_match_len + sizeof("sha256:")-1;
+			old_hash += 7;
+			fingerprint = openconnect_bin2hex(NULL, vpninfo->peer_cert_sha256_raw, sizeof(vpninfo->peer_cert_sha256_raw));
 		} else if (strncmp(old_hash, "pin-sha256:", 11) == 0) {
-			fingerprint = openconnect_bin2base64("pin-sha256:", vpninfo->peer_cert_sha256_raw, sizeof(vpninfo->peer_cert_sha256_raw));
-			min_match_len = real_min_match_len + sizeof("pin-sha256:")-1;
+			old_hash += 11;
+			fingerprint = openconnect_bin2base64(NULL, vpninfo->peer_cert_sha256_raw, sizeof(vpninfo->peer_cert_sha256_raw));
+			case_sensitive = 1;
 		} else {
 			vpn_progress(vpninfo, PRG_ERR, _("Unknown certificate hash: %s.\n"), old_hash);
 			return -EIO;
 		}
 	} else {
+		/* Not the same as the sha1: case above, because this hashes the full cert */
 		unsigned char *cert;
 		int len;
 		unsigned char sha1_bin[SHA1_SIZE];
@@ -1097,7 +1126,6 @@ int openconnect_check_peer_cert_hash(struct openconnect_info *vpninfo,
 			return -EIO;
 
 		fingerprint = openconnect_bin2hex(NULL, sha1_bin, sizeof(sha1_bin));
-		min_match_len = real_min_match_len;
 	}
 
 	if (!fingerprint)
@@ -1106,15 +1134,13 @@ int openconnect_check_peer_cert_hash(struct openconnect_info *vpninfo,
 	old_len = strlen(old_hash);
 	fingerprint_len = strlen(fingerprint);
 
-	/* allow partial matches */
-	if (old_len < fingerprint_len) {
-		if (strncasecmp(old_hash, fingerprint, MAX(min_match_len, old_len))) {
-			if (old_len < min_match_len) {
-				vpn_progress(vpninfo, PRG_ERR, _("The size of the provided fingerprint is less than the minimum required (%u).\n"), real_min_match_len);
-			}
-			ret = 1;
-		}
-	} else if (strcasecmp(old_hash, fingerprint)) {
+	if (old_len > fingerprint_len)
+		ret = 1;
+	else if (case_sensitive ? strncmp(old_hash, fingerprint, old_len) :
+		 strncasecmp(old_hash, fingerprint, old_len))
+		ret = 1;
+	else if (old_len < min_match_len) {
+		vpn_progress(vpninfo, PRG_ERR, _("The size of the provided fingerprint is less than the minimum required (%u).\n"), min_match_len);
 		ret = 1;
 	}
 

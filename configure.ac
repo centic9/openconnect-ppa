@@ -1,4 +1,4 @@
-AC_INIT(openconnect, 8.05)
+AC_INIT(openconnect, 8.10)
 AC_CONFIG_HEADERS([config.h])
 
 PKG_PROG_PKG_CONFIG
@@ -197,9 +197,26 @@ AC_LINK_IFELSE([AC_LANG_PROGRAM([
 	       ])
 CFLAGS="$oldCFLAGS"
 
+AC_MSG_CHECKING([For localtime_r])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <time.h>],[[
+	struct tm tm;
+	time_t t = 0;
+	localtime_r(&t, &tm);]])],
+	       [AC_MSG_RESULT([yes])
+	        AC_DEFINE(HAVE_LOCALTIME_R, 1, [Have localtime_r() function])],
+	       [AC_MSG_RESULT([no])])
+
 if test "$have_win" = yes; then
    # Checking "properly" for __attribute__((dllimport,stdcall)) functions is non-trivial
    LIBS="$LIBS -lws2_32 -lshlwapi -lsecur32 -liphlpapi"
+   AC_MSG_CHECKING([For localtime_s])
+   AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <time.h>],[[
+	struct tm tm;
+	time_t t = 0;
+	localtime_s(&tm, (time_t)0);]])],
+	       [AC_MSG_RESULT([yes])
+	        AC_DEFINE(HAVE_LOCALTIME_S, 1, [Have localtime_s() function])],
+	       [AC_MSG_RESULT([no])])
 else
    AC_CHECK_FUNC(socket, [], AC_CHECK_LIB(socket, socket, [], AC_ERROR(Cannot find socket() function)))
 fi
@@ -372,6 +389,8 @@ fi
 
 AC_ARG_WITH([openssl-version-check],
     AS_HELP_STRING([--without-openssl-version-check], [Do not check for known-broken OpenSSL versions]))
+AC_ARG_WITH([gnutls-version-check],
+    AS_HELP_STRING([--without-gnutls-version-check], [Do not check for known-broken GnuTLS versions]))
 AC_ARG_WITH([default-gnutls-priority],
     AS_HELP_STRING([--with-default-gnutls-priority=STRING],
 	[Provide a default string as GnuTLS priority string]),
@@ -486,6 +505,13 @@ case "$ssl_library" in
 		      [esp=yes],
 		      [AC_MSG_WARN([ESP support will be disabled])])
 
+	AC_MSG_CHECKING([for SSL_CIPHER_find() in OpenSSL])
+	AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <openssl/ssl.h>],
+					[SSL_CIPHER_find((void *)0, "");])],
+		       [AC_MSG_RESULT(yes)
+			AC_DEFINE(HAVE_SSL_CIPHER_FIND, [1], [OpenSSL has SSL_CIPHER_find() function])],
+		       [AC_MSG_RESULT(no)])
+
 	LIBS="${oldLIBS}"
 	CFLAGS="${oldCFLAGS}"
 
@@ -502,6 +528,24 @@ case "$ssl_library" in
 	CFLAGS="$CFLAGS $GNUTLS_CFLAGS"
 	esp=yes
 	dtls=yes
+
+	# Check for the known-broken versions of GnuTLS,
+	if test "$with_gnutls_version_check" != "no"; then
+           AC_MSG_CHECKING([for known-broken versions of GnuTLS])
+           AC_COMPILE_IFELSE([AC_LANG_PROGRAM([#include <gnutls/gnutls.h>],
+			       [#if GNUTLS_VERSION_NUMBER >= 0x030603 && GNUTLS_VERSION_NUMBER <= 0x03060c
+			       #error Bad GnuTLS
+			       #endif
+			       ])],
+			 [],
+			 [AC_MSG_RESULT(yes)
+			  AC_MSG_ERROR([DTLS is insecure in GnuTLS v3.6.3 through v3.6.12.]
+[See https://gitlab.com/gnutls/gnutls/issues/960]
+[Add --without-gnutls-version-check to configure args to avoid this check (DTLS]
+[will still be disabled at runtime), or build with another version.])])
+	   AC_MSG_RESULT(no)
+       fi
+
 	AC_CHECK_FUNC(gnutls_system_key_add_x509,
 		      [AC_DEFINE(HAVE_GNUTLS_SYSTEM_KEYS, 1, [From GnuTLS 3.4.0])], [])
 	AC_CHECK_FUNC(gnutls_pkcs11_add_provider,
@@ -527,7 +571,7 @@ case "$ssl_library" in
 
 	PKG_CHECK_MODULES(TASN1, [libtasn1], [have_tasn1=yes], [have_tasn1=no])
 	if test "$have_tasn1" = "yes"; then
-	   PKG_CHECK_MODULES(TSS2_ESYS, [tss2-esys],
+	   PKG_CHECK_MODULES(TSS2_ESYS, [tss2-esys tss2-mu],
 			     [AC_DEFINE(HAVE_TSS2, 1, [Have TSS2])
 			      AC_SUBST(TPM2_CFLAGS, ['$(TASN1_CFLAGS) $(TSS2_ESYS_CFLAGS)'])
 			      AC_SUBST(TPM2_LIBS, ['$(TASN1_LIBS) $(TSS2_ESYS_LIBS)'])
@@ -681,13 +725,13 @@ if (test "$libproxy_pkg" = "no"); then
    AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <libproxy.h>],
 			   [(void)px_proxy_factory_new();])],
 	  [AC_MSG_RESULT(yes (with libproxy.h))
-	   AC_DEFINE([LIBPROXY_HDR], ["libproxy.h"])
+	   AC_DEFINE([LIBPROXY_HDR], ["libproxy.h"], [libproxy header file])
 	   AC_SUBST([LIBPROXY_LIBS], [-lproxy])
 	   libproxy_pkg=yes],
 	  [AC_LINK_IFELSE([AC_LANG_PROGRAM([#include <proxy.h>],
 				  [(void)px_proxy_factory_new();])],
 		  [AC_MSG_RESULT(yes (with proxy.h))
-		   AC_DEFINE([LIBPROXY_HDR], ["proxy.h"])
+		   AC_DEFINE([LIBPROXY_HDR], ["proxy.h"], [libproxy header file])
 		   AC_SUBST([LIBPROXY_LIBS], [-lproxy])
 		   libproxy_pkg=yes],
 		   [AC_MSG_RESULT(no)])])

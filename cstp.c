@@ -414,8 +414,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 		else
 			vpn_progress(vpninfo, PRG_DEBUG, "%s: %s\n", buf, colon);
 
-		if (((i = 7) && !strncmp(buf, "X-DTLS-", 7)) ||
-		    ((i = 9) && !strncmp(buf, "X-DTLS12-", 9))) {
+		if (!strncmp(buf, "X-DTLS-", (i = 7)) || !strncmp(buf, "X-DTLS12-", (i = 9))) {
 			*next_dtls_option = new_option;
 			next_dtls_option = &new_option->next;
 
@@ -601,7 +600,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 			     mtu);
 	}
 	if (old_addr) {
-		if (strcmp(old_addr, vpninfo->ip_info.addr)) {
+		if (!vpninfo->ip_info.addr || strcmp(old_addr, vpninfo->ip_info.addr)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different Legacy IP address (%s != %s)\n"),
 				     vpninfo->ip_info.addr, old_addr);
@@ -610,7 +609,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 		}
 	}
 	if (old_netmask) {
-		if (strcmp(old_netmask, vpninfo->ip_info.netmask)) {
+		if (!vpninfo->ip_info.netmask || strcmp(old_netmask, vpninfo->ip_info.netmask)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different Legacy IP netmask (%s != %s)\n"),
 				     vpninfo->ip_info.netmask, old_netmask);
@@ -618,7 +617,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 		}
 	}
 	if (old_addr6) {
-		if (strcmp(old_addr6, vpninfo->ip_info.addr6)) {
+		if (!vpninfo->ip_info.addr6 || strcmp(old_addr6, vpninfo->ip_info.addr6)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different IPv6 address (%s != %s)\n"),
 				     vpninfo->ip_info.addr6, old_addr6);
@@ -626,7 +625,7 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 		}
 	}
 	if (old_netmask6) {
-		if (strcmp(old_netmask6, vpninfo->ip_info.netmask6)) {
+		if (!vpninfo->ip_info.netmask6 || strcmp(old_netmask6, vpninfo->ip_info.netmask6)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different IPv6 netmask (%s != %s)\n"),
 				     vpninfo->ip_info.netmask6, old_netmask6);
@@ -638,8 +637,6 @@ static int start_cstp_connection(struct openconnect_info *vpninfo)
 	free_optlist(old_cstp_opts);
 	vpn_progress(vpninfo, PRG_INFO, _("CSTP connected. DPD %d, Keepalive %d\n"),
 		     vpninfo->ssl_times.dpd, vpninfo->ssl_times.keepalive);
-	vpn_progress(vpninfo, PRG_DEBUG, _("CSTP Ciphersuite: %s\n"),
-		     openconnect_get_cstp_cipher(vpninfo));
 
 	monitor_fd_new(vpninfo, ssl);
 
@@ -1191,6 +1188,7 @@ int cstp_bye(struct openconnect_info *vpninfo, const char *reason)
 {
 	unsigned char *bye_pkt;
 	int reason_len;
+	int ret;
 
 	/* already lost connection? */
 #if defined(OPENCONNECT_OPENSSL)
@@ -1216,10 +1214,17 @@ int cstp_bye(struct openconnect_info *vpninfo, const char *reason)
 	vpn_progress(vpninfo, PRG_INFO,
 		     _("Send BYE packet: %s\n"), reason);
 
-	ssl_nonblock_write(vpninfo, bye_pkt, reason_len + 9);
+	ret = ssl_nonblock_write(vpninfo, bye_pkt, reason_len + 9);
+	if (ret == reason_len + 9) {
+		ret = 0;
+	} else if (ret >= 0) {
+		vpn_progress(vpninfo, PRG_ERR,
+			     _("Short write writing BYE packet\n"));
+		ret = -EIO;
+	}
 	free(bye_pkt);
 
-	return 0;
+	return ret;
 }
 
 void cstp_common_headers(struct openconnect_info *vpninfo, struct oc_text_buf *buf)

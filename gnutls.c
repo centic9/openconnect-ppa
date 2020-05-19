@@ -56,16 +56,25 @@ static int gnutls_pin_callback(void *priv, int attempt, const char *uri,
 #define GNUTLS_E_PREMATURE_TERMINATION GNUTLS_E_UNEXPECTED_PACKET_LENGTH
 #endif
 
+/* GnuTLS 3.5.0 added this flag to send a client cert, even if its issuer is
+ * mismatched to the list of issuers requested by the server. OpenSSL does
+ * this by default.
+ * https://github.com/curl/curl/issues/1411
+ */
+#ifndef GNUTLS_FORCE_CLIENT_CERT
+#define GNUTLS_FORCE_CLIENT_CERT 0
+#endif
 
-/* Compile-time optimisable GnuTLS version check. We should never be
- * run against a version of GnuTLS which is *older* than the one we
- * were built again, but we might be run against a version which is
- * newer. So some ancient compatibility code *can* be dropped at
- * compile time. Likewise, if building against GnuTLS 2.x then we
- * can never be running agsinst a 3.x library — the soname changed. */
-#define gtls_ver(a,b,c) ( GNUTLS_VERSION_MAJOR >= (a) &&		\
-	(GNUTLS_VERSION_NUMBER >= ( ((a) << 16) + ((b) << 8) + (c) ) || \
-	 gnutls_check_version(#a "." #b "." #c)))
+static char tls_library_version[32] = "";
+
+const char *openconnect_get_tls_library_version()
+{
+	if (!*tls_library_version) {
+		snprintf(tls_library_version, sizeof(tls_library_version), "GnuTLS %s",
+		         gnutls_check_version(NULL));
+	}
+	return tls_library_version;
+}
 
 /* Helper functions for reading/writing lines over SSL. */
 static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openconnect_info *vpninfo, char *buf, size_t len)
@@ -90,7 +99,11 @@ static int _openconnect_gnutls_write(gnutls_session_t ses, int fd, struct openco
 				FD_SET(fd, &rd_set);
 
 			cmd_fd_set(vpninfo, &rd_set, &maxfd);
-			select(maxfd + 1, &rd_set, &wr_set, NULL, NULL);
+			if (select(maxfd + 1, &rd_set, &wr_set, NULL, NULL) < 0 &&
+			    errno != EINTR) {
+				vpn_perror(vpninfo, _("Failed select() for TLS"));
+				return -EIO;
+			}
 			if (is_cancel_pending(vpninfo, &rd_set)) {
 				vpn_progress(vpninfo, PRG_ERR, _("SSL write cancelled\n"));
 				return -EINTR;
@@ -141,6 +154,11 @@ static int _openconnect_gnutls_read(gnutls_session_t ses, int fd, struct opencon
 
 			cmd_fd_set(vpninfo, &rd_set, &maxfd);
 			ret = select(maxfd + 1, &rd_set, &wr_set, NULL, tv);
+			if (ret < 0 && errno != EINTR) {
+				vpn_perror(vpninfo, _("Failed select() for TLS"));
+				return -EIO;
+			}
+
 			if (is_cancel_pending(vpninfo, &rd_set)) {
 				vpn_progress(vpninfo, PRG_ERR, _("SSL read cancelled\n"));
 				done = -EINTR;
@@ -232,7 +250,11 @@ static int openconnect_gnutls_gets(struct openconnect_info *vpninfo, char *buf, 
 				FD_SET(vpninfo->ssl_fd, &rd_set);
 
 			cmd_fd_set(vpninfo, &rd_set, &maxfd);
-			select(maxfd + 1, &rd_set, &wr_set, NULL, NULL);
+			if (select(maxfd + 1, &rd_set, &wr_set, NULL, NULL) < 0 &&
+			    errno != EINTR) {
+				vpn_perror(vpninfo, _("Failed select() for TLS"));
+				return -EIO;
+			}
 			if (is_cancel_pending(vpninfo, &rd_set)) {
 				vpn_progress(vpninfo, PRG_ERR, _("SSL read cancelled\n"));
 				ret = -EINTR;
@@ -505,33 +527,6 @@ static int load_pkcs12_certificate(struct openconnect_info *vpninfo,
 	return 0;
 }
 
-/* Older versions of GnuTLS didn't actually bother to check this, so we'll
-   do it for them. Is there a bug reference for this? Or just the git commit
-   reference (c1ef7efb in master, 5196786c in gnutls_3_0_x-2)? */
-static int check_issuer_sanity(gnutls_x509_crt_t cert, gnutls_x509_crt_t issuer)
-{
-#if GNUTLS_VERSION_NUMBER > 0x030014
-	return 0;
-#else
-	unsigned char id1[512], id2[512];
-	size_t id1_size = 512, id2_size = 512;
-	int err;
-
-	err = gnutls_x509_crt_get_authority_key_id(cert, id1, &id1_size, NULL);
-	if (err)
-		return 0;
-
-	err = gnutls_x509_crt_get_subject_key_id(issuer, id2, &id2_size, NULL);
-	if (err)
-		return 0;
-	if (id1_size == id2_size && !memcmp(id1, id2, id1_size))
-		return 0;
-
-	/* EEP! */
-	return -EIO;
-#endif
-}
-
 static int count_x509_certificates(gnutls_datum_t *datum)
 {
 	int count = 0;
@@ -551,12 +546,19 @@ static int count_x509_certificates(gnutls_datum_t *datum)
 
 static int get_cert_name(gnutls_x509_crt_t cert, char *name, size_t namelen)
 {
+	/* When the name buffer is not big enough, gnutls_x509_crt_get_dn*() will
+	 * update the length argument to the required size, and return
+	 * GNUTLS_E_SHORT_MEMORY_BUFFER. We need to avoid clobbering the original
+	 * length variable. */
+	size_t nl = namelen;
 	if (gnutls_x509_crt_get_dn_by_oid(cert, GNUTLS_OID_X520_COMMON_NAME,
-					  0, 0, name, &namelen) &&
-	    gnutls_x509_crt_get_dn(cert, name, &namelen)) {
-		name[namelen-1] = 0;
-		snprintf(name, namelen-1, "<unknown>");
-		return -EINVAL;
+					  0, 0, name, &nl)) {
+		nl = namelen;
+		if (gnutls_x509_crt_get_dn(cert, name, &nl)) {
+			name[namelen-1] = 0;
+			snprintf(name, namelen-1, "<unknown>");
+			return -EINVAL;
+		}
 	}
 	return 0;
 }
@@ -896,6 +898,17 @@ static int import_openssl_pem(struct openconnect_info *vpninfo,
 	return ret;
 }
 
+static void fill_token_info(char *buf, size_t s, unsigned char *dst, size_t dstlen)
+{
+	if (s && !gtls_ver(3,6,0))
+		s--;
+	if (s > dstlen)
+		s = dstlen;
+	memcpy(dst, buf, s);
+	if (s < dstlen)
+		memset(dst + s, ' ', dstlen - s);
+}
+
 static int load_certificate(struct openconnect_info *vpninfo)
 {
 	gnutls_datum_t fdata;
@@ -1168,47 +1181,26 @@ static int load_certificate(struct openconnect_info *vpninfo)
 			if (!token->label[0]) {
 				s = sizeof(token->label) + 1;
 				if (!gnutls_pkcs11_obj_get_info(crt, GNUTLS_PKCS11_OBJ_TOKEN_LABEL,
-								buf, &s)) {
-					if (!gtls_ver(3,6,0))
-						s--;
-					memcpy(token->label, buf, s);
-					memset(token->label + s, ' ',
-					       sizeof(token->label) - s);
-				}
+								buf, &s))
+					fill_token_info(buf, s, token->label, sizeof(token->label));
 			}
 			if (!token->manufacturerID[0]) {
 				s = sizeof(token->manufacturerID) + 1;
 				if (!gnutls_pkcs11_obj_get_info(crt, GNUTLS_PKCS11_OBJ_TOKEN_MANUFACTURER,
-								buf, &s)) {
-					if (!gtls_ver(3,6,0))
-						s--;
-					memcpy(token->manufacturerID, buf, s);
-					memset(token->manufacturerID + s, ' ',
-					       sizeof(token->manufacturerID) - s);
-				}
+								buf, &s))
+					fill_token_info(buf, s, token->manufacturerID, sizeof(token->manufacturerID));
 			}
 			if (!token->model[0]) {
 				s = sizeof(token->model) + 1;
 				if (!gnutls_pkcs11_obj_get_info(crt, GNUTLS_PKCS11_OBJ_TOKEN_MODEL,
-								buf, &s)) {
-					if (!gtls_ver(3,6,0))
-						s--;
-					memcpy(token->model, buf, s);
-					memset(token->model + s, ' ',
-					       sizeof(token->model) - s);
-				}
+								buf, &s))
+					fill_token_info(buf, s, token->model, sizeof(token->model));
 			}
 			if (!token->serialNumber[0]) {
 				s = sizeof(token->serialNumber) + 1;
 				if (!gnutls_pkcs11_obj_get_info(crt, GNUTLS_PKCS11_OBJ_TOKEN_SERIAL,
-								buf, &s)) {
-					if (!gtls_ver(3,6,0))
-						s--;
-					memcpy(token->serialNumber, buf, s);
-					memset(token->serialNumber + s, ' ',
-					       sizeof(token->serialNumber) - s);
-				}
-
+								buf, &s))
+					fill_token_info(buf, s, token->serialNumber, sizeof(token->serialNumber));
 			}
 
 			free(key_url);
@@ -1602,8 +1594,7 @@ static int load_certificate(struct openconnect_info *vpninfo)
 
 		for (i = 0; i < nr_extra_certs; i++) {
 			if (extra_certs[i] &&
-			    gnutls_x509_crt_check_issuer(last_cert, extra_certs[i]) &&
-			    !check_issuer_sanity(last_cert, extra_certs[i]))
+			    gnutls_x509_crt_check_issuer(last_cert, extra_certs[i]))
 				break;
 		}
 
@@ -1616,16 +1607,6 @@ static int load_certificate(struct openconnect_info *vpninfo)
 			/* Look for it in the system trust cafile too. */
 			err = gnutls_certificate_get_issuer(vpninfo->https_cred,
 							    last_cert, &issuer, 0);
-			/* The check_issuer_sanity() function works fine as a workaround where
-			   it was used above, but when gnutls_certificate_get_issuer() returns
-			   a bogus cert, there's nothing we can do to fix it up. We don't get
-			   to iterate over all the available certs like we can over our own
-			   list. */
-			if (!err && check_issuer_sanity(last_cert, issuer)) {
-				vpn_progress(vpninfo, PRG_ERR,
-					     _("WARNING: GnuTLS returned incorrect issuer certs; authentication may fail!\n"));
-				break;
-			}
 			free_issuer = 0;
 
 #ifdef HAVE_P11KIT
@@ -1651,7 +1632,7 @@ static int load_certificate(struct openconnect_info *vpninfo)
 					get_cert_name(issuer, name, sizeof(name));
 
 					vpn_progress(vpninfo, PRG_ERR,
-						     _("Got next CA '%s' from PKCS11\n"), name);
+						     _("Got next CA '%s' from PKCS#11\n"), name);
 				}
 			}
 #endif
@@ -2182,7 +2163,7 @@ int openconnect_open_https(struct openconnect_info *vpninfo)
 			}
 		}
 	}
-	gnutls_init(&vpninfo->https_sess, GNUTLS_CLIENT);
+	gnutls_init(&vpninfo->https_sess, GNUTLS_CLIENT|GNUTLS_FORCE_CLIENT_CERT);
 	gnutls_session_set_ptr(vpninfo->https_sess, (void *) vpninfo);
 	/*
 	 * For versions of GnuTLS older than 3.2.9, we try to avoid long
@@ -2219,24 +2200,26 @@ int openconnect_open_https(struct openconnect_info *vpninfo)
 	* 28065ce3896b1b0f87972d0bce9b17641ebb69b9
 	*/
 
+        if (!strlen(vpninfo->ciphersuite_config)) {
 #ifdef DEFAULT_PRIO
-	default_prio = DEFAULT_PRIO ":%COMPAT";
+		default_prio = DEFAULT_PRIO ":%COMPAT";
 #else
-	/* GnuTLS 3.5.19 and onward refuse to negotiate AES-CBC-HMAC-SHA256
-	 * by default but some Cisco servers can't do anything better, so
-	 * explicitly add '+SHA256' to allow it. Yay Cisco. */
-	default_prio = "NORMAL:-VERS-SSL3.0:+SHA256:%COMPAT";
+		/* GnuTLS 3.5.19 and onward refuse to negotiate AES-CBC-HMAC-SHA256
+		 * by default but some Cisco servers can't do anything better, so
+		 * explicitly add '+SHA256' to allow it. Yay Cisco. */
+		default_prio = "NORMAL:-VERS-SSL3.0:+SHA256:%COMPAT";
 #endif
 
-	snprintf(vpninfo->gnutls_prio, sizeof(vpninfo->gnutls_prio), "%s%s%s",
-		 default_prio, vpninfo->pfs?":-RSA":"", vpninfo->no_tls13?":-VERS-TLS1.3":"");
+		snprintf(vpninfo->ciphersuite_config, sizeof(vpninfo->ciphersuite_config), "%s%s%s",
+		         default_prio, vpninfo->pfs?":-RSA":"", vpninfo->no_tls13?":-VERS-TLS1.3":"");
+        }
 
 	err = gnutls_priority_set_direct(vpninfo->https_sess,
-					 vpninfo->gnutls_prio, NULL);
+					 vpninfo->ciphersuite_config, NULL);
 	if (err) {
 		vpn_progress(vpninfo, PRG_ERR,
-			     _("Failed to set TLS priority string (\"%s\"): %s\n"),
-			     vpninfo->gnutls_prio, gnutls_strerror(err));
+			     _("Failed to set GnuTLS priority string (\"%s\"): %s\n"),
+			     vpninfo->ciphersuite_config, gnutls_strerror(err));
 		gnutls_deinit(vpninfo->https_sess);
 		vpninfo->https_sess = NULL;
 		closesocket(ssl_sock);
@@ -2258,9 +2241,6 @@ int openconnect_open_https(struct openconnect_info *vpninfo)
 	err = cstp_handshake(vpninfo, 1);
 	if (err)
 		return err;
-
-	gnutls_free(vpninfo->cstp_cipher);
-	vpninfo->cstp_cipher = get_gnutls_cipher(vpninfo->https_sess);
 
 	vpninfo->ssl_fd = ssl_sock;
 
@@ -2292,7 +2272,11 @@ int cstp_handshake(struct openconnect_info *vpninfo, unsigned init)
 				FD_SET(ssl_sock, &rd_set);
 
 			cmd_fd_set(vpninfo, &rd_set, &maxfd);
-			select(maxfd + 1, &rd_set, &wr_set, NULL, NULL);
+			if (select(maxfd + 1, &rd_set, &wr_set, NULL, NULL) < 0 &&
+			    errno != EINTR) {
+				vpn_perror(vpninfo, _("Failed select() for TLS"));
+				return -EIO;
+			}
 			if (is_cancel_pending(vpninfo, &rd_set)) {
 				vpn_progress(vpninfo, PRG_ERR, _("SSL connection cancelled\n"));
 				gnutls_deinit(vpninfo->https_sess);
@@ -2315,12 +2299,15 @@ int cstp_handshake(struct openconnect_info *vpninfo, unsigned init)
 		}
 	}
 
+	gnutls_free(vpninfo->cstp_cipher);
+	vpninfo->cstp_cipher = get_gnutls_cipher(vpninfo->https_sess);
+
 	if (init) {
-		vpn_progress(vpninfo, PRG_INFO, _("Connected to HTTPS on %s\n"),
-			     vpninfo->hostname);
+		vpn_progress(vpninfo, PRG_INFO, _("Connected to HTTPS on %s with ciphersuite %s\n"),
+			     vpninfo->hostname, vpninfo->cstp_cipher);
 	} else {
-		vpn_progress(vpninfo, PRG_INFO, _("Renegotiated SSL on %s\n"),
-			     vpninfo->hostname);
+		vpn_progress(vpninfo, PRG_INFO, _("Renegotiated SSL on %s with ciphersuite %s\n"),
+			     vpninfo->hostname, vpninfo->cstp_cipher);
 	}
 
 	return 0;
@@ -2366,15 +2353,7 @@ int openconnect_init_ssl(void)
 
 char *get_gnutls_cipher(gnutls_session_t session)
 {
-	char *str;
-#if GNUTLS_VERSION_NUMBER > 0x03010a
-	str = gnutls_session_get_desc(session);
-#else
-	str = gnutls_strdup(gnutls_cipher_suite_get_name(
-		gnutls_kx_get(session), gnutls_cipher_get(session),
-		gnutls_mac_get(session)));
-#endif
-	return str;
+	return gnutls_session_get_desc(session);
 }
 
 int openconnect_sha1(unsigned char *result, void *data, int datalen)
@@ -2642,7 +2621,7 @@ void *establish_eap_ttls(struct openconnect_info *vpninfo)
 	gnutls_credentials_set(ttls_sess, GNUTLS_CRD_CERTIFICATE, vpninfo->https_cred);
 
 	err = gnutls_priority_set_direct(ttls_sess,
-				   vpninfo->gnutls_prio, NULL);
+				   vpninfo->ciphersuite_config, NULL);
 
 	err = gnutls_handshake(ttls_sess);
 	if (!err) {

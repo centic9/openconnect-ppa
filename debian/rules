@@ -15,6 +15,7 @@ override_dh_auto_configure:
 		--disable-dsa-tests \
 		--htmldir=/usr/share/doc/openconnect/html \
 		--with-gnutls \
+		--without-gnutls-version-check \
 		--with-vpnc-script=/usr/share/vpnc-scripts/vpnc-script
 	$(MAKE) version.c
 	sed -i -e 's|".*"|"v$(DEB_VERSION)"|' version.c

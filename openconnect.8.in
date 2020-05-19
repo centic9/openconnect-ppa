@@ -15,6 +15,7 @@ openconnect \- Multi-protocol VPN client, for Cisco AnyConnect VPNs and others
 .OP \-d,\-\-deflate
 .OP \-D,\-\-no\-deflate
 .OP \-\-force\-dpd interval
+.OP \-\-force\-trojan interval
 .OP \-F,\-\-form\-entry form:opt=value
 .OP \-g,\-\-usergroup group
 .OP \-h,\-\-help
@@ -80,8 +81,10 @@ protocols for data transport.
 
 It was originally written to support Cisco "AnyConnect" VPN servers,
 and has since been extended with experimental support for Juniper
-Network Connect and Junos Pulse VPN servers
+Network Connect
 .RB ( \-\-protocol=nc )
+and Junos Pulse VPN servers
+.RB ( \-\-protocol=pulse )
 and PAN GlobalProtect VPN servers
 .RB ( \-\-protocol=gp ).
 
@@ -175,7 +178,7 @@ compression can be disabled by setting the mode to
 .B \-\-force\-dpd=INTERVAL
 Use
 .I INTERVAL
-as minimum Dead Peer Detection interval for CSTP and DTLS, forcing use of DPD even when the server doesn't request it.
+as minimum Dead Peer Detection interval (in seconds) for CSTP and DTLS, forcing use of DPD even when the server doesn't request it.
 .TP
 .B \-g,\-\-usergroup=GROUP
 Use
@@ -219,7 +222,9 @@ Use syslog for progress messages
 Prepend a timestamp to each progress message
 .TP
 .B \-\-passtos
-Copy TOS / TCLASS of payload packet into DTLS packets.
+Copy TOS / TCLASS of payload packet into DTLS and ESP packets. This is
+not set by default because it may leak information about the payload
+(for example, by differentiating voice/video traffic).
 .TP
 .B \-U,\-\-setuid=USER
 Drop privileges after connecting, to become user
@@ -232,6 +237,12 @@ Drop privileges during execution of trojan binary or script (CSD, TNCC, or HIP).
 Run
 .I SCRIPT
 instead of the trojan binary or script.
+.TP
+.B \-\-force-trojan=INTERVAL
+Use
+.I INTERVAL
+as interval (in seconds) for repeat execution of Trojan binary or script, overriding default and/or
+server-set interval.
 .TP
 .B \-m,\-\-mtu=MTU
 Request
@@ -361,7 +372,18 @@ Fetch and print cookie only; don't connect
 Print cookie before connecting
 .TP
 .B \-\-cafile=FILE
-Cert file for server verification
+Additional CA file for server verification. By default, this simply
+causes OpenConnect to trust additional root CA certificate(s) in
+addition to those trusted by the system. Use
+.B \-\-no\-system\-trust
+to prevent OpenConnect from trusting the system default certificate
+authorities.
+.TP
+.B \-\-no\-system\-trust
+Do not trust the system default certificate authorities. If this option is
+given, only certificate authorities given with the
+.B \-\-cafile
+option, if any, will be trusted automatically.
 .TP
 .B \-\-disable\-ipv6
 Do not advertise IPv6 capability to server
@@ -380,12 +402,6 @@ as the local port for DTLS and UDP datagrams
 .B \-\-dump\-http\-traffic
 Enable verbose output of all HTTP requests and the bodies of all responses
 received from the server.
-.TP
-.B \-\-no\-system\-trust
-Do not trust the system default certificate authorities. If this option is
-given, only certificate authorities given with the
-.B \-\-cafile
-option, if any, will be trusted automatically.
 
 .TP
 .B \-\-pfs
@@ -452,9 +468,19 @@ to be used for the connection. Supported protocols are
 for Cisco AnyConnect (the default),
 .I nc
 for experimental support for Juniper Network Connect (also supported
-by Junos Pulse servers), and
+by most Junos Pulse servers),
+.I pulse
+for experimental support for Junos Pulse, and
 .I gp
 for experimental support for PAN GlobalProtect.
+
+OpenConnect does not yet support all of the authentication options used
+by Pulse, nor does it support Host Checker/TNCC with Pulse. If your
+Junos Pulse VPN is not yet supported with
+.BR \-\-protocol=pulse ,
+then
+.B \-\-protocol=nc
+may be a useful fallback option.
 .TP
 .B \-\-token\-mode=MODE
 Enable one-time password generation using the
@@ -467,7 +493,8 @@ will call liboath to generate an RFC 6238 time-based password, and
 .B \-\-token\-mode=hotp
 will call liboath to generate an RFC 4226 HMAC-based password. Yubikey
 tokens which generate OATH codes in hardware are supported with
-.B \-\-token\-mode=yubioath
+.B \-\-token\-mode=yubioath. \-\-token\-mode=oidc will use the provided 
+OpenIDConnect token as an RFC 6750 bearer token.
 .TP
 .B \-\-token\-secret={ SECRET[,COUNTER] | @FILENAME }
 The secret to use when generating one-time passwords/verification codes.
@@ -481,6 +508,8 @@ CTF string (with or without dashes).
 For Yubikey OATH the token secret specifies the name of the credential to be
 used. If not provided, the first OATH credential found on the device will be
 used.
+
+For OIDC the secret is the bearer token to be used.
 
 .IR FILENAME ,
 if specified, can contain any of the above strings.  Or, it can contain a

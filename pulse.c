@@ -79,6 +79,22 @@
 #define PROMPT_PASSWORD		4
 #define PROMPT_GTC_NEXT		0x10000
 
+/* Request codes for the Juniper Expanded/2 auth requests. */
+#define J2_PASSCHANGE	0x43
+#define J2_PASSREQ	0x01
+#define J2_PASSRETRY	0x81
+#define J2_PASSFAIL	0xc5
+
+/* Limit to TLS record size. */
+#define TLS_RECORD_MAX	(16384)
+
+/* Outbound fragment size limit  */
+#define TTLS_MAXFRAG	(8192)
+
+#define TTLS_LENGTH	(1<<7)
+#define TTLS_MOREFRAGS	(1<<6)
+#define TTLS_START	(1<<5)
+
 static void buf_append_be16(struct oc_text_buf *buf, uint16_t val)
 {
 	unsigned char b[2];
@@ -139,7 +155,7 @@ static int buf_append_eap_hdr(struct oc_text_buf *buf, uint8_t code, uint8_t ide
 static void buf_fill_eap_len(struct oc_text_buf *buf, int ofs)
 {
 	/* EAP length word is always at 0x16, and counts bytes from 0x14 */
-	if (ofs >= 0 && !buf_error(buf) && buf->pos > ofs + 8)
+	if (ofs >= 0 && !buf_error(buf) && buf->pos >= ofs + 4)
 		store_be16(buf->data + ofs + 2, buf->pos - ofs);
 }
 
@@ -911,8 +927,10 @@ static int pulse_request_session_kill(struct openconnect_info *vpninfo, struct o
 
 	o.nr_choices = sessions;
 	o.choices = calloc(sessions, sizeof(*o.choices));
-	if (!o.choices)
-		return -ENOMEM;
+	if (!o.choices) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
 	while (l) {
 		char *from = NULL;
@@ -922,6 +940,8 @@ static int pulse_request_session_kill(struct openconnect_info *vpninfo, struct o
 		if (parse_avp(vpninfo, &p, &l, &avp_p, &avp_len, &avp_flags,
 			      &avp_vendor, &avp_code)) {
 		badlist:
+			free(from);
+			free(sessid);
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Failed to parse session list\n"));
 			ret = -EINVAL;
@@ -939,8 +959,10 @@ static int pulse_request_session_kill(struct openconnect_info *vpninfo, struct o
 			dump_avp(vpninfo, avp_flags, avp_vendor, avp_code, avp_p2, avp_len2);
 
 			if (avp_vendor == VENDOR_JUNIPER2 && avp_code == 0xd66) {
+				free(sessid);
 				sessid = strndup(avp_p2, avp_len2);
 			} else if (avp_vendor == VENDOR_JUNIPER2 && avp_code == 0xd67) {
+				free(from);
 				from = strndup(avp_p2, avp_len2);
 			} else if (avp_vendor == VENDOR_JUNIPER2 && avp_code == 0xd68 &&
 				   avp_len2 == 8) {
@@ -950,26 +972,33 @@ static int pulse_request_session_kill(struct openconnect_info *vpninfo, struct o
 			}
 		}
 
-		if (!from || !sessid || !when) {
-			free(from);
-			free(sessid);
+		if (!from || !sessid || !when)
 			goto badlist;
-		}
 
-		localtime_r(&when, &tm);
-		strftime(tmbuf, 80, "%a, %d %b %Y %H:%M:%S %Z", &tm);
+		if (0
+#ifdef HAVE_LOCALTIME_S
+		    || !localtime_s(&tm, &when)
+#endif
+#ifdef HAVE_LOCALTIME_R
+		    || localtime_r(&when, &tm)
+#endif
+		    ) {
+			strftime(tmbuf, sizeof(tmbuf), "%a, %d %b %Y %H:%M:%S %Z", &tm);
+		} else
+			snprintf(tmbuf, sizeof(tmbuf), "@%lu", (unsigned long)when);
+
 		buf_append(form_msg, " - %s from %s at %s\n", sessid, from, tmbuf);
+
 		free(from);
+		from = NULL;
+
 		o.choices[i] = malloc(sizeof(struct oc_choice));
 		if (!o.choices[i]) {
+			free(sessid);
 			ret = -ENOMEM;
 			goto out;
 		}
 		o.choices[i]->name = o.choices[i]->label = sessid;
-		if (!o.choices[i]->name) {
-			ret = -ENOMEM;
-			goto out;
-		}
 		i++;
 	}
 	ret = buf_error(form_msg);
@@ -1083,6 +1112,105 @@ static int pulse_request_user_auth(struct openconnect_info *vpninfo, struct oc_t
 
 	ret = 0;
  out:
+	return ret;
+}
+
+static int pulse_request_pass_change(struct openconnect_info *vpninfo, struct oc_text_buf *reqbuf,
+				     uint8_t eap_ident, int prompt_flags)
+{
+	struct oc_auth_form f;
+	struct oc_form_opt o[3];
+	unsigned char eap_avp[23];
+	int l1, l2;
+	int ret;
+
+	memset(&f, 0, sizeof(f));
+	memset(o, 0, sizeof(o));
+	f.auth_id = (char *) ((prompt_flags & PROMPT_PRIMARY) ? "pulse_user_change" : "pulse_secondary_change");
+	f.opts = &o[0];
+
+	f.message = _("Password expired. Please change password:");
+
+	o[0].type = OC_FORM_OPT_PASSWORD;
+	o[0].name = (char *)"oldpass";
+	o[0].label = (char *) _("Current password:");
+	o[0].next = &o[1];
+
+	o[1].type = OC_FORM_OPT_PASSWORD;
+	o[1].name = (char *)"newpass1";
+	o[1].label = (char *) _("New password:");
+	o[1].next = &o[2];
+
+	o[2].type = OC_FORM_OPT_PASSWORD;
+	o[2].name = (char *)"newpass1";
+	o[2].label = (char *) _("Verify new password:");
+
+ retry:
+	free_pass(&o[0]._value);
+	free_pass(&o[1]._value);
+	free_pass(&o[2]._value);
+
+	ret = process_auth_form(vpninfo, &f);
+	if (ret)
+		goto out;
+
+	if (!o[0]._value || !o[1]._value || !o[2]._value) {
+		vpn_progress(vpninfo, PRG_DEBUG, _("Passwords not provided.\n"));
+		ret = -EINVAL;
+		goto out;
+	}
+
+	if (strcmp(o[1]._value, o[2]._value)) {
+		vpn_progress(vpninfo, PRG_ERR, _("Passwords do not match.\n"));
+		goto retry;
+	}
+	l1 = strlen(o[0]._value);
+	if (l1 > 253) {
+		vpn_progress(vpninfo, PRG_ERR, _("Current password too long.\n"));
+		goto retry;
+	}
+	l2 = strlen(o[1]._value);
+	if (l2 > 253) {
+		vpn_progress(vpninfo, PRG_ERR, _("New password too long.\n"));
+		goto retry;
+	}
+
+	/* AVP flags+mandatory+length */
+	store_be32(eap_avp, AVP_CODE_EAP_MESSAGE);
+	store_be32(eap_avp + 4, (AVP_MANDATORY << 24) + sizeof(eap_avp) + l1 + 2 + l2);
+
+	/* EAP header: code/ident/len */
+	eap_avp[8] = EAP_RESPONSE;
+	eap_avp[9] = eap_ident;
+	store_be16(eap_avp + 10, l1 + l2 + 17); /* EAP length */
+	store_be32(eap_avp + 12, EXPANDED_JUNIPER);
+	store_be32(eap_avp + 16, 2);
+
+	/* EAP Juniper/2 payload: 02 02 <len> <password> */
+	eap_avp[20] = eap_avp[21] = 0x02;
+	eap_avp[22] = l1 + 2; /* Why 2? */
+	buf_append_bytes(reqbuf, eap_avp, sizeof(eap_avp));
+	buf_append_bytes(reqbuf, o[0]._value, l1);
+
+	/* Reuse eap_avp to append the new password */
+	eap_avp[0] = 0x03;
+	eap_avp[1] = l2 + 2;
+	buf_append_bytes(reqbuf, eap_avp, 2);
+	buf_append_bytes(reqbuf, o[1]._value, l2);
+
+	/* Padding */
+	if ((sizeof(eap_avp) + l1 + 2 + l2) & 3) {
+		uint32_t pad = 0;
+
+		buf_append_bytes(reqbuf, &pad,
+				 4 - ((sizeof(eap_avp) + l1 + 2 + l2) & 3));
+	}
+
+	ret = 0;
+ out:
+	free_pass(&o[0]._value);
+	free_pass(&o[1]._value);
+	free_pass(&o[2]._value);
 	return ret;
 }
 
@@ -1438,11 +1566,12 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 			goto bad_ift;
 
 		vpninfo->ttls_eap_ident = bytes[0x15];
-		vpninfo->ttls_recvbuf = malloc(16384);
+		vpninfo->ttls_recvbuf = malloc(TLS_RECORD_MAX);
 		if (!vpninfo->ttls_recvbuf)
 			return -ENOMEM;
 		vpninfo->ttls_recvlen = 0;
 		vpninfo->ttls_recvpos = 0;
+		vpninfo->ttls_msgleft = 0;
 		ttls = establish_eap_ttls(vpninfo);
 		if (!ttls) {
 			vpn_progress(vpninfo, PRG_ERR,
@@ -1564,10 +1693,13 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 			char md5buf[MD5_SIZE * 2 + 1];
 			get_cert_md5_fingerprint(vpninfo, vpninfo->peer_cert, md5buf);
 			if (avp_len != MD5_SIZE * 2 || strncasecmp(avp_p, md5buf, MD5_SIZE * 2)) {
-				vpn_progress(vpninfo, PRG_ERR,
-					     _("Server certificate mismatch. Aborting due to suspected MITM attack\n"));
-				ret = -EPERM;
-				goto out;
+				/* This actually happens in the wild and the official clients don't seem to
+				 * care. It's too late because we've already authenticated at this point,
+				 * and it's only MD5 anyway. I find it hard to care. Just whine and continue
+				 * anyway. */
+				vpn_progress(vpninfo, PRG_INFO,
+					     _("WARNING: Server provided certificate MD5 does not match its actual certificate.\n"));
+				continue;
 			}
 		}
 		if (avp_vendor == VENDOR_JUNIPER2 && avp_code == 0xd65) {
@@ -1608,6 +1740,7 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 			prompt_flags = PROMPT_PASSWORD | PROMPT_USERNAME;
 			break;
 		case 3: /* Prompt for password.*/
+		case 15:
 			prompt_flags = PROMPT_PASSWORD;
 			break;
 		case 5: /* Prompt for username.*/
@@ -1615,7 +1748,14 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 			break;
 
 		default:
-			goto auth_unknown;
+			/* It does no harm to submit both, as anything unwanted is ignored. */
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Unknown D73 prompt value 0x%x. Will prompt for both username and password.\n"),
+				     val);
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Please report this value and the behaviour of the official client.\n"));
+			prompt_flags = PROMPT_PASSWORD | PROMPT_USERNAME;
+			break;
 		}
 		} else if (avp_vendor == VENDOR_JUNIPER2 && avp_code == 0xd7b) {
 			free(signin_prompt);
@@ -1642,12 +1782,43 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 				gtc_found = 1;
 				free(gtc_prompt);
 				gtc_prompt = strndup(avp_c + 5, avp_len - 5);
-			} else if (avp_len == 13 && load_be32(avp_c + 4) == EXPANDED_JUNIPER) {
+			} else if (avp_len >= 13 && load_be32(avp_c + 4) == EXPANDED_JUNIPER) {
 				switch (load_be32(avp_c + 8)) {
 				case 2: /*  Expanded Juniper/2: password */
 					j2_found = 1;
 					j2_code = avp_c[12];
+					if (j2_code == J2_PASSREQ || j2_code == J2_PASSRETRY || j2_code == J2_PASSCHANGE) {
+						if (avp_len != 13)
+							goto auth_unknown;
+						/* Precisely one byte, which is j2_code. OK. */
+					} else if (j2_code == J2_PASSFAIL) {
+						/*
+						  < 0000:  00 00 55 97 00 00 00 05  00 00 00 84 00 00 01 fa  |..U.............|
+						  < 0010:  00 0a 4c 01 01 05 00 70  fe 00 0a 4c 00 00 00 01  |..L....p...L....|
+						  < 0020:  00 00 00 4f 40 00 00 62  01 02 00 5a fe 00 0a 4c  |...O@..b...Z...L|
+						  < 0030:  00 00 00 02 c5 01 4d 43  6f 75 6c 64 20 6e 6f 74  |......MCould not|
+						  < 0040:  20 63 68 61 6e 67 65 20  70 61 73 73 77 6f 72 64  | change password|
+						  < 0050:  2e 20 4e 65 77 20 70 61  73 73 77 6f 72 64 20 6d  |. New password m|
+						  < 0060:  75 73 74 20 62 65 20 61  74 20 6c 65 61 73 74 20  |ust be at least |
+						  < 0070:  34 20 63 68 61 72 61 63  74 65 72 73 20 6c 6f 6e  |4 characters lon|
+						  < 0080:  67 2e 00 00                                       |g...|
+						 */
+						if (avp_len > 15 && avp_c[13] == 0x01 && avp_c[14] == avp_len - 13) {
+							/* Failure message. */
+							vpn_progress(vpninfo, PRG_ERR,
+								     _("Authentication failure: %.*s\n"), avp_len - 15, avp_c + 15);
+							ret = -EIO;
+							goto out;
+						} else
+							goto auth_unknown;
+					}
 					break;
+
+				case 3: /* TNCC */
+					vpn_progress(vpninfo, PRG_ERR,
+						     _("Pulse server requested Host Checker; not yet supported\n"
+						       "Try Juniper mode (--protocol=nc)\n"));
+					goto bad_eap;
 
 				default:
 					goto auth_unknown;
@@ -1703,10 +1874,21 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 				     _("Pulse password auth request, code 0x%02x\n"),
 				     j2_code);
 
-			/* Present user/password form to user */
-			ret = pulse_request_user_auth(vpninfo, reqbuf, eap2_ident, prompt_flags,
-				(prompt_flags & PROMPT_PRIMARY) ? user_prompt : user2_prompt,
-				(prompt_flags & PROMPT_PRIMARY) ? pass_prompt : pass2_prompt);
+			if (j2_code == J2_PASSCHANGE) {
+				ret = pulse_request_pass_change(vpninfo, reqbuf, eap2_ident,
+								prompt_flags);
+			} else if (j2_code == J2_PASSREQ || j2_code == J2_PASSRETRY) {
+				/* Present user/password form to user */
+				ret = pulse_request_user_auth(vpninfo, reqbuf, eap2_ident, prompt_flags,
+							      (prompt_flags & PROMPT_PRIMARY) ? user_prompt : user2_prompt,
+							      (prompt_flags & PROMPT_PRIMARY) ? pass_prompt : pass2_prompt);
+			} else {
+				vpn_progress(vpninfo, PRG_ERR,
+					     _("Pulse password request with unknown code 0x%02x. Please report.\n"),
+					     j2_code);
+				ret = -EINVAL;
+			}
+
 			if (ret)
 				goto out;
 		} else if (gtc_found) {
@@ -1795,6 +1977,16 @@ static int pulse_authenticate(struct openconnect_info *vpninfo, int connecting)
 	return ret;
 }
 
+static void buf_append_ttls_headers(struct openconnect_info *vpninfo, struct oc_text_buf *buf, uint8_t flags)
+{
+	buf_append_ift_hdr(buf, VENDOR_TCG, IFT_CLIENT_AUTH_RESPONSE);
+	buf_append_be32(buf, JUNIPER_1); /* IF-T/TLS Auth Type */
+	buf_append_eap_hdr(buf, EAP_RESPONSE, 0 /*vpninfo->ttls_eap_ident*/,
+			   EAP_TYPE_TTLS, 0);
+	/* Flags byte for EAP-TTLS */
+	buf_append_bytes(buf, &flags, 1);
+
+}
 int pulse_eap_ttls_send(struct openconnect_info *vpninfo, const void *data, int len)
 {
 	struct oc_text_buf *buf = vpninfo->ttls_pushbuf;
@@ -1807,38 +1999,140 @@ int pulse_eap_ttls_send(struct openconnect_info *vpninfo, const void *data, int 
 
 	/* We concatenate sent data into a single EAP-TTLS frame which is
 	 * sent just before we actually need to read something. */
-	if (!buf->pos) {
-		buf_append_ift_hdr(buf, VENDOR_TCG, IFT_CLIENT_AUTH_RESPONSE);
-		buf_append_be32(buf, JUNIPER_1); /* IF-T/TLS Auth Type */
-		buf_append_eap_hdr(buf, EAP_RESPONSE, vpninfo->ttls_eap_ident,
-				   EAP_TYPE_TTLS, 0);
-		/* Flags byte for EAP-TTLS */
-		buf_append_bytes(buf, "\0", 1);
-	}
+	if (!buf->pos)
+		buf_append_ttls_headers(vpninfo, buf, 0);
+
 	buf_append_bytes(buf, data, len);
 	return len;
 }
 
 int pulse_eap_ttls_recv(struct openconnect_info *vpninfo, void *data, int len)
 {
-	struct oc_text_buf *pushbuf= vpninfo->ttls_pushbuf;
+	struct oc_text_buf *pushbuf;
 	int ret;
+
+	if (!len && (vpninfo->ttls_recvlen || vpninfo->ttls_msgleft)) {
+		vpn_progress(vpninfo, PRG_ERR,
+			     _("EAP-TTLS failure: Flushing output with pending input bytes\n"));
+		return -EIO;
+	}
 
 	if (!vpninfo->ttls_recvlen) {
 		uint8_t flags;
 
-		if (pushbuf && !buf_error(pushbuf) && pushbuf->pos) {
-			buf_fill_eap_len(pushbuf, 0x14);
-			ret = send_ift_packet(vpninfo, pushbuf);
-			if (ret)
-				return ret;
-			buf_truncate(pushbuf);
-		} /* else send a continue? */
+		if (vpninfo->ttls_msgleft) {
+			/* Fragments left to receive of current message.
+			 * Send an Acknowledge frame */
+			pushbuf = buf_alloc();
+			buf_append_ttls_headers(vpninfo, pushbuf, 0);
+		} else {
+			/* Send the pending outbound bytes as a single message */
+			pushbuf = vpninfo->ttls_pushbuf;
+			vpninfo->ttls_pushbuf = NULL;
+		}
+		if (buf_error(pushbuf))
+			return buf_free(pushbuf);
+
+		/* This can never happen. We *always* put the header in. */
+		if (pushbuf->pos < 0x1a) {
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("Error creating EAP-TTLS buffer\n"));
+			buf_free(pushbuf);
+			return -EIO;
+		}
+
+		/* Handle outbound fragmentation if necessary */
+		if (pushbuf->pos > TTLS_MAXFRAG + 0x1a) {
+			struct oc_text_buf *frag = buf_alloc();
+			uint8_t flags = TTLS_MOREFRAGS | TTLS_LENGTH;
+			uint32_t remaining;
+			char *msg;
+
+			if (buf_error(frag)) {
+				buf_free(pushbuf);
+				return buf_free(frag);
+			}
+
+			remaining = pushbuf->pos - 0x1a;
+			msg = pushbuf->data + 0x1a;
+
+			do {
+				buf_append_ttls_headers(vpninfo, frag, flags);
+				if (flags & TTLS_LENGTH) {
+					buf_append_be32(frag, remaining);
+					flags &= ~TTLS_LENGTH;
+				}
+				buf_append_bytes(frag, msg, TTLS_MAXFRAG);
+				msg += TTLS_MAXFRAG;
+				remaining -= TTLS_MAXFRAG;
+
+				if (buf_error(frag)) {
+					buf_free(pushbuf);
+					return buf_free(frag);
+				}
+
+				frag->data[0x15] = vpninfo->ttls_eap_ident;
+				buf_fill_eap_len(frag, 0x14);
+				ret = send_ift_packet(vpninfo, frag);
+				if (ret) {
+					buf_free(pushbuf);
+					buf_free(frag);
+					return ret;
+				}
+				buf_truncate(frag);
+
+				ret = vpninfo->ssl_read(vpninfo, (void *)vpninfo->ttls_recvbuf,
+							  TLS_RECORD_MAX);
+				if (ret < 0) {
+					vpn_progress(vpninfo, PRG_ERR,
+						     _("Failed to read EAP-TTLS Acknowledge: %s\n"),
+						     strerror(-ret));
+					buf_free(pushbuf);
+					buf_free(frag);
+					return ret;
+				}
+				if (ret > 0 && vpninfo->dump_http_traffic) {
+					vpn_progress(vpninfo, PRG_TRACE,
+						     _("Read %d bytes of IF-T/TLS EAP-TTLS record\n"),
+						     ret);
+					dump_buf_hex(vpninfo, PRG_TRACE, '<',
+						     (void *)vpninfo->ttls_recvbuf,
+						     ret);
+				}
+				if (!valid_ift_auth_eap(vpninfo->ttls_recvbuf, ret) ||
+				    ret != 0x1a ||
+				    vpninfo->ttls_recvbuf[0x18] != EAP_TYPE_TTLS ||
+				    vpninfo->ttls_recvbuf[0x19] != 0) {
+					vpn_progress(vpninfo, PRG_ERR,
+						     _("Bad EAP-TTLS Acknowledge packet\n"));
+					buf_free(pushbuf);
+					buf_free(frag);
+					return -EIO;
+				}
+				vpninfo->ttls_eap_ident = vpninfo->ttls_recvbuf[0x15];
+
+			} while (remaining > TTLS_MAXFRAG);
+
+			buf_free(frag);
+			memmove(pushbuf->data + 0x1a, msg, remaining);
+			pushbuf->pos = remaining + 0x1a;
+		}
+
+		/* Fill in the EAP header ident and length */
+		pushbuf->data[0x15] = vpninfo->ttls_eap_ident;
+		buf_fill_eap_len(pushbuf, 0x14);
+
+		ret = send_ift_packet(vpninfo, pushbuf);
+		buf_free(pushbuf);
+		if (ret)
+			return ret;
+
+		/* If called just to flush outbound, return now. */
 		if (!len)
 			return 0;
 
 		vpninfo->ttls_recvlen = vpninfo->ssl_read(vpninfo, (void *)vpninfo->ttls_recvbuf,
-							  16384);
+							  TLS_RECORD_MAX);
 		if (vpninfo->ttls_recvlen > 0 && vpninfo->dump_http_traffic) {
 			vpn_progress(vpninfo, PRG_TRACE,
 				     _("Read %d bytes of IF-T/TLS EAP-TTLS record\n"),
@@ -1852,23 +2146,67 @@ int pulse_eap_ttls_recv(struct openconnect_info *vpninfo, void *data, int len)
 		    vpninfo->ttls_recvbuf[0x18] != EAP_TYPE_TTLS) {
 		bad_pkt:
 			vpn_progress(vpninfo, PRG_ERR,
-				     _("Bad EAP-TTLS packet\n"));
+				     _("Bad EAP-TTLS packet (len %d, left %d)\n"),
+				     vpninfo->ttls_recvlen, vpninfo->ttls_msgleft);
 			return -EIO;
 		}
 		vpninfo->ttls_eap_ident = vpninfo->ttls_recvbuf[0x15];
 		flags = vpninfo->ttls_recvbuf[0x19];
-		if (flags & 0x7f)
+
+		/* Start, Reserved bits and version (we only support version zero) */
+		if (flags & 0x3f)
 			goto bad_pkt;
-		if (flags & 0x80) {
-			/* Length bit. */
-			if (vpninfo->ttls_recvlen < 0x1e ||
-			    load_be32(vpninfo->ttls_recvbuf + 0x1a) != vpninfo->ttls_recvlen - 0x1e)
+
+		if (vpninfo->ttls_msgleft) {
+			/* Second and subsequent fragments MUST NOT have L bit set */
+			if (flags & TTLS_LENGTH)
 				goto bad_pkt;
-			vpninfo->ttls_recvpos = 0x1e;
-			vpninfo->ttls_recvlen -= 0x1e;
-		} else {
+
+			/* The header doesn't contain a length word. Just IF-T/TLS, EAP, TTLS */
 			vpninfo->ttls_recvpos = 0x1a;
 			vpninfo->ttls_recvlen -= 0x1a;
+
+			if (flags & TTLS_MOREFRAGS) {
+				/* If the More Fragments bit is set, this packet
+				 * must contain fewer bytes than are left. */
+				if (vpninfo->ttls_recvlen >= vpninfo->ttls_msgleft)
+					goto bad_pkt;
+			} else {
+				/* If the More Fragments bit is set, this packet
+				   must contain precisely the number of bytes left. */
+				if (vpninfo->ttls_recvlen != vpninfo->ttls_msgleft)
+					goto bad_pkt;
+			}
+			vpninfo->ttls_msgleft -= vpninfo->ttls_recvlen;
+		} else if (flags & TTLS_MOREFRAGS) {
+			/* First fragment MUST have Length */
+			if (!(flags & TTLS_LENGTH) || vpninfo->ttls_recvlen < 0x1e)
+				goto bad_pkt;
+
+			vpninfo->ttls_recvpos = 0x1e;
+			vpninfo->ttls_recvlen -= 0x1e;
+
+			vpninfo->ttls_msgleft = load_be32(vpninfo->ttls_recvbuf + 0x1a);
+			if (vpninfo->ttls_msgleft <= vpninfo->ttls_recvlen || !vpninfo->ttls_recvlen)
+				goto bad_pkt;
+
+			vpninfo->ttls_msgleft -= vpninfo->ttls_recvlen;
+		} else {
+			/* Unfragmented message */
+			if (flags & TTLS_LENGTH) {
+				/* Length bit. */
+				if (vpninfo->ttls_recvlen < 0x1e ||
+				    load_be32(vpninfo->ttls_recvbuf + 0x1a) != vpninfo->ttls_recvlen - 0x1e)
+					goto bad_pkt;
+				vpninfo->ttls_recvpos = 0x1e;
+				vpninfo->ttls_recvlen -= 0x1e;
+			} else {
+				vpninfo->ttls_recvpos = 0x1a;
+				vpninfo->ttls_recvlen -= 0x1a;
+			}
+			vpninfo->ttls_msgleft = 0;
+			if (!vpninfo->ttls_recvlen)
+				goto bad_pkt;
 		}
 	}
 
@@ -2160,7 +2498,7 @@ static int handle_esp_config_packet(struct openconnect_info *vpninfo,
 int pulse_connect(struct openconnect_info *vpninfo)
 {
 	struct oc_text_buf *reqbuf;
-	unsigned char bytes[16384];
+	unsigned char bytes[TLS_RECORD_MAX];
 	int ret;
 
 	/* If we already have a channel open, it's because we have just

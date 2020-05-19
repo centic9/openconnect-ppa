@@ -642,6 +642,12 @@ int oncp_connect(struct openconnect_info *vpninfo)
 		vpn_progress(vpninfo, PRG_ERR,
 			     _("Server response to hostname packet is error 0x%02x\n"),
 			     bytes[2]);
+		if (bytes[2] == 0x08)
+			vpn_progress(vpninfo, PRG_ERR,
+			             _("This seems to indicate that the server has disabled support for\n"
+			               "Juniper's older oNCP protocol, and only allows connections using\n"
+			               "the newer Junos Pulse protocol. This version of OpenConnect has\n"
+			               "EXPERIMENTAL support for Pulse using --prot=pulse\n"));
 		ret = -EINVAL;
 		goto out;
 	}
@@ -806,7 +812,9 @@ static int oncp_receive_espkeys(struct openconnect_info *vpninfo, int len)
 	int ret;
 
 	ret = parse_conf_pkt(vpninfo, vpninfo->cstp_pkt->oncp.kmp, len + 20, 301);
-	if (!ret && !openconnect_setup_esp_keys(vpninfo, 1)) {
+	if (!ret)
+		ret = openconnect_setup_esp_keys(vpninfo, 1);
+	if (!ret) {
 		struct esp *esp = &vpninfo->esp_in[vpninfo->current_esp_in];
 		unsigned char *p = vpninfo->cstp_pkt->oncp.kmp;
 
@@ -890,6 +898,12 @@ int oncp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 {
 	int ret;
 	int work_done = 0;
+
+	/* Periodic TNCC */
+	if (trojan_check_deadline(vpninfo, timeout)) {
+		oncp_send_tncc_command(vpninfo, 0);
+		return 1;
+	}
 
 	if (vpninfo->ssl_fd == -1)
 		goto do_reconnect;
@@ -1043,7 +1057,13 @@ int oncp_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 			 * we can stop doing this. */
 			if (vpninfo->cstp_pkt->len != kmplen + 20)
 				goto unknown_pkt;
+
 			ret = oncp_receive_espkeys(vpninfo, kmplen);
+			if (ret) {
+				vpn_progress(vpninfo, PRG_ERR, _("Failed to set up ESP: %s\n"),
+					     strerror(-ret));
+				oncp_esp_close(vpninfo);
+			}
 			work_done = 1;
 			break;
 
@@ -1276,7 +1296,8 @@ int oncp_bye(struct openconnect_info *vpninfo, const char *reason)
 void oncp_esp_close(struct openconnect_info *vpninfo)
 {
 	/* Tell server to stop sending on ESP channel */
-	queue_esp_control(vpninfo, 0);
+	if (vpninfo->dtls_state >= DTLS_CONNECTING)
+		queue_esp_control(vpninfo, 0);
 	esp_close(vpninfo);
 }
 
@@ -1307,8 +1328,9 @@ int oncp_esp_send_probes(struct openconnect_info *vpninfo)
 		pkt->data[0] = 0;
 		pktlen = construct_esp_packet(vpninfo, pkt,
 					      vpninfo->dtls_addr->sa_family == AF_INET6 ? IPPROTO_IPV6 : IPPROTO_IPIP);
-		if (pktlen >= 0)
-			send(vpninfo->dtls_fd, (void *)&pkt->esp, pktlen, 0);
+		if (pktlen < 0 ||
+		    send(vpninfo->dtls_fd, (void *)&pkt->esp, pktlen, 0) < 0)
+			vpn_progress(vpninfo, PRG_DEBUG, _("Failed to send ESP probe\n"));
 	}
 	free(pkt);
 
