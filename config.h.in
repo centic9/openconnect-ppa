@@ -96,6 +96,12 @@
 /* Have libstoken */
 #undef HAVE_LIBSTOKEN
 
+/* Have localtime_r() function */
+#undef HAVE_LOCALTIME_R
+
+/* Have localtime_s() function */
+#undef HAVE_LOCALTIME_S
+
 /* LZ4 was found */
 #undef HAVE_LZ4
 
@@ -116,6 +122,9 @@
 
 /* Have. P11. Kit. */
 #undef HAVE_P11KIT
+
+/* OpenSSL has SSL_CIPHER_find() function */
+#undef HAVE_SSL_CIPHER_FIND
 
 /* OpenSSL has SSL_CTX_set_min_proto_version() function */
 #undef HAVE_SSL_CTX_PROTOVER

@@ -91,17 +91,20 @@ host_triplet = @host@
 @OPENCONNECT_OPENSSL_TRUE@am__append_1 = $(OSSL_KEYS)
 @TEST_DSA_TRUE@am__append_2 = $(DSA_KEYS)
 @HAVE_NETNS_TRUE@am__append_3 = dtls-psk sigterm
-@HAVE_CWRAP_TRUE@am__append_4 = auth-username-pass auth-certificate auth-nonascii id-test
+@HAVE_CWRAP_TRUE@am__append_4 = auth-username-pass auth-certificate auth-nonascii cert-fingerprint id-test
 @HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@am__append_5 = auth-pkcs11
 
 # We fail test2 because PKCS11_enumerate_certs() still doesn't seem to return
 # the certs after we log in. Perhaps it's cached the results?
 @HAVE_CWRAP_TRUE@@OPENCONNECT_GNUTLS_TRUE@@TEST_PKCS11_TRUE@am__append_6 = openconnect-test2
-@CHECK_DTLS_TRUE@am__append_7 = bad_dtls_test
+# GnuTLS build fails this one: https://gitlab.com/gnutls/gnutls/-/issues/977
+@HAVE_CWRAP_TRUE@@OPENCONNECT_OPENSSL_TRUE@@TEST_PKCS11_TRUE@am__append_7 = openconnect-test3
+@OPENCONNECT_WIN32_TRUE@am__append_8 = list-taps
+@CHECK_DTLS_TRUE@am__append_9 = bad_dtls_test
 @CHECK_DTLS_TRUE@@DTLS_XFAIL_TRUE@XFAIL_TESTS =  \
 @CHECK_DTLS_TRUE@@DTLS_XFAIL_TRUE@	bad_dtls_test$(EXEEXT)
-TESTS = $(dist_check_SCRIPTS) $(am__EXEEXT_2)
-noinst_PROGRAMS = $(am__EXEEXT_2) serverhash$(EXEEXT)
+TESTS = $(dist_check_SCRIPTS) $(am__EXEEXT_3)
+noinst_PROGRAMS = $(am__EXEEXT_3) serverhash$(EXEEXT)
 subdir = tests
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/m4/ax_check_vscript.m4 \
@@ -119,8 +122,10 @@ mkinstalldirs = $(install_sh) -d
 CONFIG_HEADER = $(top_builddir)/config.h
 CONFIG_CLEAN_FILES = softhsm2.conf
 CONFIG_CLEAN_VPATH_FILES =
-@CHECK_DTLS_TRUE@am__EXEEXT_1 = bad_dtls_test$(EXEEXT)
-am__EXEEXT_2 = lzstest$(EXEEXT) seqtest$(EXEEXT) $(am__EXEEXT_1)
+@OPENCONNECT_WIN32_TRUE@am__EXEEXT_1 = list-taps$(EXEEXT)
+@CHECK_DTLS_TRUE@am__EXEEXT_2 = bad_dtls_test$(EXEEXT)
+am__EXEEXT_3 = lzstest$(EXEEXT) seqtest$(EXEEXT) $(am__EXEEXT_1) \
+	$(am__EXEEXT_2)
 PROGRAMS = $(noinst_PROGRAMS)
 am__bad_dtls_test_SOURCES_DIST = bad_dtls_test.c
 @CHECK_DTLS_TRUE@am_bad_dtls_test_OBJECTS =  \
@@ -135,6 +140,9 @@ am__v_lt_1 =
 bad_dtls_test_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC $(AM_LIBTOOLFLAGS) \
 	$(LIBTOOLFLAGS) --mode=link $(CCLD) $(bad_dtls_test_CFLAGS) \
 	$(CFLAGS) $(AM_LDFLAGS) $(LDFLAGS) -o $@
+list_taps_SOURCES = list-taps.c
+list_taps_OBJECTS = list-taps.$(OBJEXT)
+list_taps_LDADD = $(LDADD)
 lzstest_SOURCES = lzstest.c
 lzstest_OBJECTS = lzstest.$(OBJEXT)
 lzstest_LDADD = $(LDADD)
@@ -144,8 +152,9 @@ seqtest_LDADD = $(LDADD)
 am_serverhash_OBJECTS = serverhash.$(OBJEXT)
 serverhash_OBJECTS = $(am_serverhash_OBJECTS)
 serverhash_DEPENDENCIES = ../libopenconnect.la $(am__DEPENDENCIES_1)
-am__dist_check_SCRIPTS_DIST = dtls-psk sigterm auth-username-pass \
-	auth-certificate auth-nonascii id-test auth-pkcs11
+am__dist_check_SCRIPTS_DIST = autocompletion dtls-psk sigterm \
+	auth-username-pass auth-certificate auth-nonascii \
+	cert-fingerprint id-test auth-pkcs11
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -162,8 +171,8 @@ DEFAULT_INCLUDES = -I.@am__isrc@ -I$(top_builddir)
 depcomp = $(SHELL) $(top_srcdir)/depcomp
 am__maybe_remake_depfiles = depfiles
 am__depfiles_remade = ./$(DEPDIR)/bad_dtls_test-bad_dtls_test.Po \
-	./$(DEPDIR)/lzstest.Po ./$(DEPDIR)/seqtest.Po \
-	./$(DEPDIR)/serverhash.Po
+	./$(DEPDIR)/list-taps.Po ./$(DEPDIR)/lzstest.Po \
+	./$(DEPDIR)/seqtest.Po ./$(DEPDIR)/serverhash.Po
 am__mv = mv -f
 COMPILE = $(CC) $(DEFS) $(DEFAULT_INCLUDES) $(INCLUDES) $(AM_CPPFLAGS) \
 	$(CPPFLAGS) $(AM_CFLAGS) $(CFLAGS)
@@ -183,10 +192,10 @@ AM_V_CCLD = $(am__v_CCLD_@AM_V@)
 am__v_CCLD_ = $(am__v_CCLD_@AM_DEFAULT_V@)
 am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
-SOURCES = $(bad_dtls_test_SOURCES) lzstest.c seqtest.c \
+SOURCES = $(bad_dtls_test_SOURCES) list-taps.c lzstest.c seqtest.c \
 	$(serverhash_SOURCES)
-DIST_SOURCES = $(am__bad_dtls_test_SOURCES_DIST) lzstest.c seqtest.c \
-	$(serverhash_SOURCES)
+DIST_SOURCES = $(am__bad_dtls_test_SOURCES_DIST) list-taps.c lzstest.c \
+	seqtest.c $(serverhash_SOURCES)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -656,13 +665,16 @@ EXTRA_DIST = certs/ca.pem certs/ca-key.pem certs/user-cert.pem $(USER_KEYS) $(US
 	pass-UTF-8 pass-ISO8859-2 \
 	certs/server-cert.pem certs/server-key.pem configs/test1.passwd \
 	common.sh configs/test-user-cert.config configs/test-user-pass.config \
-	configs/user-cert.prm softhsm2.conf.in softhsm ns.sh configs/test-dtls-psk.config \
+	configs/user-cert.prm configs/server-cert.prm \
+	softhsm2.conf.in softhsm ns.sh configs/test-dtls-psk.config \
 	scripts/vpnc-script scripts/vpnc-script-detect-disconnect
 
-dist_check_SCRIPTS = $(am__append_3) $(am__append_4) $(am__append_5)
+dist_check_SCRIPTS = autocompletion $(am__append_3) $(am__append_4) \
+	$(am__append_5)
 @HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@PKCS11_TOKENS = openconnect-test \
 @HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@	openconnect-test1 \
-@HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@	$(am__append_6)
+@HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@	$(am__append_6) \
+@HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@	$(am__append_7)
 # Neither GnuTLS or libp11 support this
 #PKCS11_KEYS += object=DSA id=%02
 @HAVE_CWRAP_TRUE@@TEST_PKCS11_TRUE@PKCS11_KEYS = object=RSA id=%01 \
@@ -673,7 +685,7 @@ TESTS_ENVIRONMENT = srcdir="$(srcdir)" \
 	pkcs11_keys="$(PKCS11_KEYS)" \
 	pkcs11_tokens="$(PKCS11_TOKENS)"
 
-C_TESTS = lzstest seqtest $(am__append_7)
+C_TESTS = lzstest seqtest $(am__append_8) $(am__append_9)
 @CHECK_DTLS_TRUE@bad_dtls_test_SOURCES = bad_dtls_test.c
 @CHECK_DTLS_TRUE@bad_dtls_test_CFLAGS = $(OPENSSL_CFLAGS)
 @CHECK_DTLS_TRUE@bad_dtls_test_LDADD = $(OPENSSL_LIBS)
@@ -733,6 +745,10 @@ bad_dtls_test$(EXEEXT): $(bad_dtls_test_OBJECTS) $(bad_dtls_test_DEPENDENCIES) $
 	@rm -f bad_dtls_test$(EXEEXT)
 	$(AM_V_CCLD)$(bad_dtls_test_LINK) $(bad_dtls_test_OBJECTS) $(bad_dtls_test_LDADD) $(LIBS)
 
+list-taps$(EXEEXT): $(list_taps_OBJECTS) $(list_taps_DEPENDENCIES) $(EXTRA_list_taps_DEPENDENCIES) 
+	@rm -f list-taps$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(list_taps_OBJECTS) $(list_taps_LDADD) $(LIBS)
+
 lzstest$(EXEEXT): $(lzstest_OBJECTS) $(lzstest_DEPENDENCIES) $(EXTRA_lzstest_DEPENDENCIES) 
 	@rm -f lzstest$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(lzstest_OBJECTS) $(lzstest_LDADD) $(LIBS)
@@ -752,6 +768,7 @@ distclean-compile:
 	-rm -f *.tab.c
 
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/bad_dtls_test-bad_dtls_test.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/list-taps.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/lzstest.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/seqtest.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@./$(DEPDIR)/serverhash.Po@am__quote@ # am--include-marker
@@ -996,6 +1013,13 @@ recheck: all $(dist_check_SCRIPTS)
 	        am__force_recheck=am--force-recheck \
 	        TEST_LOGS="$$log_list"; \
 	exit $$?
+autocompletion.log: autocompletion
+	@p='autocompletion'; \
+	b='autocompletion'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
 dtls-psk.log: dtls-psk
 	@p='dtls-psk'; \
 	b='dtls-psk'; \
@@ -1031,6 +1055,13 @@ auth-nonascii.log: auth-nonascii
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
 	"$$tst" $(AM_TESTS_FD_REDIRECT)
+cert-fingerprint.log: cert-fingerprint
+	@p='cert-fingerprint'; \
+	b='cert-fingerprint'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
 id-test.log: id-test
 	@p='id-test'; \
 	b='id-test'; \
@@ -1055,6 +1086,13 @@ lzstest.log: lzstest$(EXEEXT)
 seqtest.log: seqtest$(EXEEXT)
 	@p='seqtest$(EXEEXT)'; \
 	b='seqtest'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
+list-taps.log: list-taps$(EXEEXT)
+	@p='list-taps$(EXEEXT)'; \
+	b='list-taps'; \
 	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
@@ -1160,6 +1198,7 @@ clean-am: clean-generic clean-libtool clean-noinstPROGRAMS \
 
 distclean: distclean-am
 		-rm -f ./$(DEPDIR)/bad_dtls_test-bad_dtls_test.Po
+	-rm -f ./$(DEPDIR)/list-taps.Po
 	-rm -f ./$(DEPDIR)/lzstest.Po
 	-rm -f ./$(DEPDIR)/seqtest.Po
 	-rm -f ./$(DEPDIR)/serverhash.Po
@@ -1209,6 +1248,7 @@ installcheck-am:
 
 maintainer-clean: maintainer-clean-am
 		-rm -f ./$(DEPDIR)/bad_dtls_test-bad_dtls_test.Po
+	-rm -f ./$(DEPDIR)/list-taps.Po
 	-rm -f ./$(DEPDIR)/lzstest.Po
 	-rm -f ./$(DEPDIR)/seqtest.Po
 	-rm -f ./$(DEPDIR)/serverhash.Po
@@ -1254,7 +1294,7 @@ uninstall-am:
 # and considered part of the sources, committed to the git tree. But for
 # reference, the commands used to generate them are here...
 
-keyfiles: $(USER_KEYS) $(USER_CERTS)
+keyfiles: $(USER_KEYS) $(USER_CERTS) $(certsdir)/server-cert.pem
 
 # Strictly speaking this is only PKCS#1 for RSA. For EC it's probably
 # best described as RFC5915§4, and no idea what defines it for DSA.
@@ -1325,6 +1365,12 @@ $(certsdir)/ec-key-pkcs1-aes128.pem: certs/ec-key-pkcs1.pem
 %.der: %.pem
 	sed -e '0,/^-----BEGIN.*KEY-----/d' -e '/^-----END.*KEY-----/,$$d' $< | base64 -d > $@
 
+$(certsdir)/server-cert.pem:
+	$(OPENSSL) req -new -config $(srcdir)/configs/server-cert.prm -key $(certsdir)/server-key.pem -out $@.csr
+	$(OPENSSL) x509 -days 3650 -CA $(certsdir)/ca.pem -CAkey $(certsdir)/ca-key.pem \
+		-extfile $(srcdir)/configs/server-cert.prm -extensions req_EXT \
+		-set_serial $(shell date +%s) -req -out $@ -in $@.csr
+
 %-cert.csr: %-key-pkcs8.pem
 	$(OPENSSL) req -new -config $(srcdir)/configs/user-cert.prm -key $< -out $@
 
@@ -1335,22 +1381,22 @@ $(certsdir)/ec-key-pkcs1-aes128.pem: certs/ec-key-pkcs1.pem
 # Nice and simple: Certs visible without login, public keys present in token
 softhsm-setup0:
 	$(SHM2_UTIL) --show-slots
-	$(SHM2_UTIL) --init-token --slot 0 --label openconnect-test \
+	$(SHM2_UTIL) --init-token --free --label openconnect-test \
 		--so-pin 12345678 --pin 1234
 
-	$(SHM2_UTIL) --slot 0 --pin 1234 --import $(certsdir)/user-key-pkcs8.pem \
+	$(SHM2_UTIL) --token openconnect-test --pin 1234 --import $(certsdir)/user-key-pkcs8.pem \
 		--label RSA --id 01
 	$(P11TOOL) --load-certificate $(certsdir)/user-cert.pem --no-mark-private \
 		   --label RSA --id 01 --set-pin 1234 --login \
 		   --write "pkcs11:token=openconnect-test;pin-value=1234"
 
-	$(SHM2_UTIL) --slot 0 --pin 1234 --import $(certsdir)/dsa-key-pkcs8.pem \
+	$(SHM2_UTIL) --token openconnect-test --pin 1234 --import $(certsdir)/dsa-key-pkcs8.pem \
 		--label DSA --id 02
 	$(P11TOOL) --load-certificate $(certsdir)/dsa-cert.pem --no-mark-private \
 		   --label DSA --id 02 --set-pin 1234 --login \
 		   --write "pkcs11:token=openconnect-test;pin-value=1234"
 
-	$(SHM2_UTIL) --slot 0 --pin 1234 --import $(certsdir)/ec-key-pkcs8.pem \
+	$(SHM2_UTIL) --token openconnect-test --pin 1234 --import $(certsdir)/ec-key-pkcs8.pem \
 			--label EC --id 03
 	$(P11TOOL) --load-certificate $(certsdir)/ec-cert.pem --no-mark-private \
 		   --label EC --id 03 --set-pin 1234 --login \
@@ -1359,7 +1405,7 @@ softhsm-setup0:
 # Second test: Import keys with GnuTLS so public key is absent
 softhsm-setup1:
 	$(SHM2_UTIL) --show-slots
-	$(SHM2_UTIL) --init-token --slot 1 --label openconnect-test1 \
+	$(SHM2_UTIL) --init-token --free --label openconnect-test1 \
 		--so-pin 12345678 --pin 1234
 
 	$(P11TOOL) --load-certificate $(certsdir)/user-cert.pem --no-mark-private \
@@ -1380,7 +1426,7 @@ softhsm-setup1:
 # Third test: CKA_PRIVATE on certificates
 softhsm-setup2:
 	$(SHM2_UTIL) --show-slots
-	$(SHM2_UTIL) --init-token --slot 2 --label openconnect-test2 \
+	$(SHM2_UTIL) --init-token --free --label openconnect-test2 \
 		--so-pin 12345678 --pin 1234
 
 	$(P11TOOL) --load-certificate $(certsdir)/user-cert.pem \
@@ -1397,6 +1443,36 @@ softhsm-setup2:
 		   --load-privkey $(certsdir)/ec-key-pkcs8.pem \
 		   --label EC --id 03 --login \
 		   --write "pkcs11:token=openconnect-test2;pin-value=1234"
+
+# Fourth test: token lacks CKF_LOGIN_REQUIRED (#123)
+softhsm-setup3:
+	$(SHM2_UTIL) --show-slots
+	$(SHM2_UTIL) --init-token --free --label openconnect-test3 \
+		--so-pin 12345678 --pin 1234
+
+# Remove the CKF_LOGIN_REQUIRED flag
+	TOKOBJ=$$(grep -l openconnect-test3 $(srcdir)/softhsm/*/token.object); \
+	if [ -n "$$TOKOBJ" ] && od -t x1 $$TOKOBJ | grep -q '^0000160.* 04 2d$$'; then \
+		echo -en \\x29 | dd bs=1 count=1 conv=notrunc seek=127 of=$$TOKOBJ; \
+	else \
+		echo "Token file not understood"; \
+		exit 1; \
+	fi
+
+	$(P11TOOL) --load-certificate $(certsdir)/user-cert.pem \
+		   --load-privkey $(certsdir)/user-key-pkcs8.pem \
+		   --label RSA --id 01 --login \
+		   --write "pkcs11:token=openconnect-test3;pin-value=1234"
+
+	$(P11TOOL) --load-certificate $(certsdir)/dsa-cert.pem \
+		   --load-privkey $(certsdir)/dsa-key-pkcs8.pem \
+		   --label DSA --id 02 --login \
+		   --write "pkcs11:token=openconnect-test3;pin-value=1234"
+
+	$(P11TOOL) --load-certificate $(certsdir)/ec-cert.pem \
+		   --load-privkey $(certsdir)/ec-key-pkcs8.pem \
+		   --label EC --id 03 --login \
+		   --write "pkcs11:token=openconnect-test3;pin-value=1234"
 
 # Tell versions [3.59,3.63) of GNU make to not export all variables.
 # Otherwise a system limit (for SysV at least) may be exceeded.

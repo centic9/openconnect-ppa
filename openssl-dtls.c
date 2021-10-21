@@ -230,7 +230,7 @@ static SSL_SESSION *generate_dtls_session(struct openconnect_info *vpninfo,
 	if (buf_error(buf)) {
 		vpn_progress(vpninfo, PRG_ERR,
 			     _("Failed to create SSL_SESSION ASN.1 for OpenSSL: %s\n"),
-			     strerror(buf_error(buf)));
+			     strerror(-buf_error(buf)));
 		buf_free(buf);
 		return NULL;
 	}
@@ -315,7 +315,7 @@ static unsigned int psk_callback(SSL *ssl, const char *hint, char *identity,
 
 #endif
 
-#if OPENSSL_VERSION_NUMBER < 0x10002000L
+#ifndef HAVE_SSL_CIPHER_FIND
 static const SSL_CIPHER *SSL_CIPHER_find(SSL *ssl, const unsigned char *ptr)
 {
     return ssl->method->get_cipher_by_char(ptr);
@@ -603,8 +603,8 @@ int dtls_try_handshake(struct openconnect_info *vpninfo)
 
 		vpninfo->dtls_state = DTLS_CONNECTED;
 		vpn_progress(vpninfo, PRG_INFO,
-			     _("Established DTLS connection (using OpenSSL). Ciphersuite %s.\n"),
-			     SSL_get_cipher(vpninfo->dtls_ssl));
+			     _("Established DTLS connection (using OpenSSL). Ciphersuite %s-%s.\n"),
+			     SSL_get_version(vpninfo->dtls_ssl), SSL_get_cipher(vpninfo->dtls_ssl));
 
 		c = openconnect_get_dtls_compression(vpninfo);
 		if (c) {
@@ -766,7 +766,7 @@ void gather_dtls_ciphers(struct openconnect_info *vpninfo, struct oc_text_buf *b
 				   (buf_error(buf) || !buf->pos) ? "" : ":",
 				   name);
 		} else if (!strcmp(vers, "TLSv1.2")) {
-			buf_append(buf12, "%s%s:",
+			buf_append(buf12, "%s%s",
 				   (buf_error(buf12) || !buf12->pos) ? "" : ":",
 				   name);
 		}

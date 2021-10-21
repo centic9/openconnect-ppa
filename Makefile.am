@@ -33,9 +33,10 @@ lib_srcs_juniper = oncp.c lzo.c auth-juniper.c
 lib_srcs_pulse = pulse.c
 lib_srcs_globalprotect = gpst.c auth-globalprotect.c
 lib_srcs_oath = oath.c
+lib_srcs_oidc = oidc.c
 
 library_srcs += $(lib_srcs_juniper) $(lib_srcs_cisco) $(lib_srcs_oath) \
-		$(lib_srcs_globalprotect) $(lib_srcs_pulse)
+		$(lib_srcs_globalprotect) $(lib_srcs_pulse) $(lib_srcs_oidc)
 
 lib_srcs_gnutls = gnutls.c gnutls_tpm.c gnutls_tpm2.c
 lib_srcs_openssl = openssl.c openssl-pkcs11.c
@@ -52,7 +53,7 @@ POTFILES = $(openconnect_SOURCES) gnutls-esp.c gnutls-dtls.c openssl-esp.c opens
 	   $(lib_srcs_esp) $(lib_srcs_dtls) gnutls_tpm2_esys.c gnutls_tpm2_ibm.c \
 	   $(lib_srcs_openssl) $(lib_srcs_gnutls) $(library_srcs) \
 	   $(lib_srcs_win32) $(lib_srcs_posix) $(lib_srcs_gssapi) $(lib_srcs_iconv) \
-	   $(lib_srcs_yubikey) $(lib_srcs_stoken)
+	   $(lib_srcs_yubikey) $(lib_srcs_stoken) $(lib_srcs_oidc)
 
 if OPENCONNECT_LIBPCSCLITE
 library_srcs += $(lib_srcs_yubikey)
@@ -98,6 +99,7 @@ else
 library_srcs += $(lib_srcs_posix)
 endif
 
+
 libopenconnect_la_SOURCES = version.c $(library_srcs)
 libopenconnect_la_CFLAGS = $(AM_CFLAGS) $(SSL_CFLAGS) $(DTLS_SSL_CFLAGS) $(LIBXML2_CFLAGS) $(LIBPROXY_CFLAGS) $(ZLIB_CFLAGS) $(P11KIT_CFLAGS) $(TSS_CFLAGS) $(LIBSTOKEN_CFLAGS) $(LIBPSKC_CFLAGS) $(GSSAPI_CFLAGS) $(INTL_CFLAGS) $(ICONV_CFLAGS) $(LIBPCSCLITE_CFLAGS) $(LIBP11_CFLAGS) $(LIBLZ4_CFLAGS)
 libopenconnect_la_LIBADD = $(SSL_LIBS) $(DTLS_SSL_LIBS) $(LIBXML2_LIBS) $(LIBPROXY_LIBS) $(ZLIB_LIBS) $(P11KIT_LIBS) $(TSS_LIBS) $(LIBSTOKEN_LIBS) $(LIBPSKC_LIBS) $(GSSAPI_LIBS) $(INTL_LIBS) $(ICONV_LIBS) $(LIBPCSCLITE_LIBS) $(LIBP11_LIBS) $(LIBLZ4_LIBS)
@@ -131,14 +133,17 @@ endif
 
 pkgconfig_DATA = openconnect.pc
 
-EXTRA_DIST = AUTHORS version.sh README.TESTS COPYING.LGPL $(lib_srcs_openssl) $(lib_srcs_gnutls)
+EXTRA_DIST = AUTHORS version.sh COPYING.LGPL $(lib_srcs_openssl) $(lib_srcs_gnutls)
 EXTRA_DIST += $(shell cd "$(top_srcdir)" && \
-		git ls-tree HEAD -r --name-only -- android/ java/ trojans/ 2>/dev/null)
+		git ls-tree HEAD -r --name-only -- android/ java/ trojans/ bash/ 2>/dev/null)
 
 DISTCLEANFILES = $(pkgconfig_DATA)
 
 pkglibexec_SCRIPTS = trojans/csd-post.sh trojans/csd-wrapper.sh trojans/tncc-wrapper.py \
-	trojans/hipreport.sh trojans/hipreport-android.sh
+	trojans/hipreport.sh trojans/hipreport-android.sh trojans/tncc-emulate.py
+
+bashcompletiondir = $(datadir)/bash-completion/completions
+bashcompletion_DATA = bash/openconnect
 
 # main.c includes version.c
 openconnect-main.$(OBJEXT): version.c

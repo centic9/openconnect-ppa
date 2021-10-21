@@ -297,8 +297,10 @@ out:
 		    || !strcmp(err, "GlobalProtect portal does not exist")) {
 			vpn_progress(vpninfo, PRG_DEBUG, "%s\n", err);
 			result = -EEXIST;
-		} else if (!strcmp(err, "Invalid authentication cookie")
-		           || !strcmp(err, "Valid client certificate is required")) {
+		} else if (!strcmp(err, "Invalid authentication cookie")           /* equivalent to custom HTTP status 512 */
+		           || !strcmp(err, "Valid client certificate is required") /* equivalent to custom HTTP status 513 */
+		           || !strcmp(err, "Allow Automatic Restoration of SSL VPN is disabled")) {
+			/* Any of these errors indicates that retrying won't help us reconnect (EPERM signals this to mainloop.) */
 			vpn_progress(vpninfo, PRG_ERR, "%s\n", err);
 			result = -EPERM;
 		} else {
@@ -618,6 +620,7 @@ static int gpst_get_config(struct openconnect_info *vpninfo)
 	const char *request_body_type = "application/x-www-form-urlencoded";
 	const char *method = "POST";
 	char *xml_buf=NULL;
+	vpninfo->cstp_options = NULL;
 
 	/* submit getconfig request */
 	buf_append(request_body, "client-type=1&protocol-version=p1&app-version=4.0.5-8");
@@ -672,7 +675,7 @@ static int gpst_get_config(struct openconnect_info *vpninfo)
 		goto out;
 	}
 	if (old_addr) {
-		if (strcmp(old_addr, vpninfo->ip_info.addr)) {
+		if (!vpninfo->ip_info.addr || strcmp(old_addr, vpninfo->ip_info.addr)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different Legacy IP address (%s != %s)\n"),
 				     vpninfo->ip_info.addr, old_addr);
@@ -681,7 +684,7 @@ static int gpst_get_config(struct openconnect_info *vpninfo)
 		}
 	}
 	if (old_netmask) {
-		if (strcmp(old_netmask, vpninfo->ip_info.netmask)) {
+		if (!vpninfo->ip_info.netmask || strcmp(old_netmask, vpninfo->ip_info.netmask)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different Legacy IP netmask (%s != %s)\n"),
 				     vpninfo->ip_info.netmask, old_netmask);
@@ -690,7 +693,7 @@ static int gpst_get_config(struct openconnect_info *vpninfo)
 		}
 	}
 	if (old_addr6) {
-		if (strcmp(old_addr6, vpninfo->ip_info.addr6)) {
+		if (!vpninfo->ip_info.addr6 || strcmp(old_addr6, vpninfo->ip_info.addr6)) {
 			vpn_progress(vpninfo, PRG_ERR,
 				     _("Reconnect gave different IPv6 address (%s != %s)\n"),
 				     vpninfo->ip_info.addr6, old_addr6);
@@ -698,7 +701,7 @@ static int gpst_get_config(struct openconnect_info *vpninfo)
 		}
 	}
 	if (old_netmask6) {
-		if (strcmp(old_netmask6, vpninfo->ip_info.netmask6)) {
+		if (!vpninfo->ip_info.netmask6 || strcmp(old_netmask6, vpninfo->ip_info.netmask6)) {
 			vpn_progress(vpninfo, PRG_ERR,
 			             _("Reconnect gave different IPv6 netmask (%s != %s)\n"),
 			             vpninfo->ip_info.netmask6, old_netmask6);
@@ -719,6 +722,13 @@ static int gpst_connect(struct openconnect_info *vpninfo)
 	struct oc_text_buf *reqbuf;
 	const char start_tunnel[12] = "START_TUNNEL"; /* NOT zero-terminated */
 	char buf[256];
+
+	/* We do NOT actually start the HTTPS tunnel if ESP is enabled and we received
+	 * ESP keys, because the ESP keys become invalid as soon as the HTTPS tunnel
+	 * is connected! >:-(
+	 */
+	if (vpninfo->dtls_state != DTLS_DISABLED && vpninfo->dtls_state != DTLS_NOSECRET)
+		return 0;
 
 	/* Connect to SSL VPN tunnel */
 	vpn_progress(vpninfo, PRG_DEBUG,
@@ -905,12 +915,20 @@ static int run_hip_script(struct openconnect_info *vpninfo)
 #endif
 
 	if (!vpninfo->csd_wrapper) {
-		vpn_progress(vpninfo, PRG_ERR,
-		             _("WARNING: Server asked us to submit HIP report with md5sum %s.\n"
-		               "VPN connectivity may be disabled or limited without HIP report submission.\n"
-		               "You need to provide a --csd-wrapper argument with the HIP report submission script.\n"),
-		             vpninfo->csd_token);
-		/* XXX: Many GlobalProtect VPNs work fine despite allegedly requiring HIP report submission */
+		/* Only warn once */
+		if (!vpninfo->last_trojan) {
+			vpn_progress(vpninfo, PRG_ERR,
+				     _("WARNING: Server asked us to submit HIP report with md5sum %s.\n"
+				       "    VPN connectivity may be disabled or limited without HIP report submission.\n    %s\n"),
+				     vpninfo->csd_token,
+#if defined(_WIN32) || defined(__native_client__)
+				     _("However, running the HIP report submission script on this platform is not yet implemented.")
+#else
+				     _("You need to provide a --csd-wrapper argument with the HIP report submission script.")
+#endif
+				);
+			/* XXX: Many GlobalProtect VPNs work fine despite allegedly requiring HIP report submission */
+		}
 		return 0;
 	}
 
@@ -966,7 +984,7 @@ static int run_hip_script(struct openconnect_info *vpninfo)
 		return ret;
 	} else {
 		/* in child: run HIP script */
-		char *hip_argv[32];
+		const char *hip_argv[32];
 		int i = 0;
 		close(pipefd[0]);
 		/* The duplicated fd does not have O_CLOEXEC */
@@ -976,20 +994,20 @@ static int run_hip_script(struct openconnect_info *vpninfo)
 			exit(1);
 
 		hip_argv[i++] = openconnect_utf8_to_legacy(vpninfo, vpninfo->csd_wrapper);
-		hip_argv[i++] = (char *)"--cookie";
+		hip_argv[i++] = "--cookie";
 		hip_argv[i++] = vpninfo->cookie;
 		if (vpninfo->ip_info.addr) {
-			hip_argv[i++] = (char *)"--client-ip";
-			hip_argv[i++] = (char *)vpninfo->ip_info.addr;
+			hip_argv[i++] = "--client-ip";
+			hip_argv[i++] = vpninfo->ip_info.addr;
 		}
 		if (vpninfo->ip_info.addr6) {
-			hip_argv[i++] = (char *)"--client-ipv6";
-			hip_argv[i++] = (char *)vpninfo->ip_info.addr6;
+			hip_argv[i++] = "--client-ipv6";
+			hip_argv[i++] = vpninfo->ip_info.addr6;
 		}
-		hip_argv[i++] = (char *)"--md5";
+		hip_argv[i++] = "--md5";
 		hip_argv[i++] = vpninfo->csd_token;
 		hip_argv[i++] = NULL;
-		execv(hip_argv[0], hip_argv);
+		execv(hip_argv[0], (char **)hip_argv);
 
 	out:
 		vpn_progress(vpninfo, PRG_ERR,
@@ -998,6 +1016,22 @@ static int run_hip_script(struct openconnect_info *vpninfo)
 	}
 
 #endif /* !_WIN32 && !__native_client__ */
+}
+
+static int check_and_maybe_submit_hip_report(struct openconnect_info *vpninfo)
+{
+	int ret;
+
+	ret = check_or_submit_hip_report(vpninfo, NULL);
+	if (ret == -EAGAIN) {
+		vpn_progress(vpninfo, PRG_DEBUG,
+					 _("Gateway says HIP report submission is needed.\n"));
+		ret = run_hip_script(vpninfo);
+	} else if (ret == 0)
+		vpn_progress(vpninfo, PRG_DEBUG,
+					 _("Gateway says no HIP report submission is needed.\n"));
+
+	return ret;
 }
 
 int gpst_setup(struct openconnect_info *vpninfo)
@@ -1013,24 +1047,25 @@ int gpst_setup(struct openconnect_info *vpninfo)
 	if (ret)
 		goto out;
 
-	/* Check HIP */
-	ret = check_or_submit_hip_report(vpninfo, NULL);
-	if (ret == -EAGAIN) {
-		vpn_progress(vpninfo, PRG_DEBUG,
-					 _("Gateway says HIP report submission is needed.\n"));
-		ret = run_hip_script(vpninfo);
-		if (ret != 0)
-			goto out;
-	} else if (ret == 0)
-		vpn_progress(vpninfo, PRG_DEBUG,
-					 _("Gateway says no HIP report submission is needed.\n"));
+	/* Always check HIP after getting configuration */
+	ret = check_and_maybe_submit_hip_report(vpninfo);
+	if (ret)
+		goto out;
 
-	/* We do NOT actually start the HTTPS tunnel yet if we want to
-	 * use ESP, because the ESP tunnel won't work if the HTTPS tunnel
-	 * is connected! >:-(
+        /* XX: last_trojan is used both as a sentinel to detect the
+         * first time we check/submit HIP, and for the mainloop to timeout
+         * when periodic re-checking is required.
+         */
+	vpninfo->last_trojan = time(NULL);
+
+	/* Default HIP re-checking to 3600 seconds unless already set by
+	 * --force-trojan or portal config.
 	 */
-	if (vpninfo->dtls_state == DTLS_DISABLED || vpninfo->dtls_state == DTLS_NOSECRET)
-		ret = gpst_connect(vpninfo);
+	if (!vpninfo->trojan_interval)
+		vpninfo->trojan_interval = 3600;
+
+	/* Connect tunnel immediately if ESP is not going to be used */
+	ret = gpst_connect(vpninfo);
 
 out:
 	return ret;
@@ -1052,25 +1087,35 @@ int gpst_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 		vpn_progress(vpninfo, PRG_INFO,
 			     _("ESP tunnel connected; exiting HTTPS mainloop.\n"));
 		vpninfo->dtls_state = DTLS_CONNECTED;
+		/* Now that we are connected, let's ensure timeout is less than
+		 * or equal to DTLS DPD/keepalive else we might over sleep, eg
+		 * if timeout is set to DTLS attempt period from ESP mainloop,
+		 * and falsely detect dead peer. */
+		if (vpninfo->dtls_times.dpd)
+			if (*timeout > vpninfo->dtls_times.dpd * 1000)
+				*timeout = vpninfo->dtls_times.dpd * 1000;
 		/* fall through */
 	case DTLS_CONNECTED:
-		/* Rekey if needed */
+		/* Rekey or check-and-resubmit HIP if needed */
 		if (keepalive_action(&vpninfo->ssl_times, timeout) == KA_REKEY)
 			goto do_rekey;
+		else if (trojan_check_deadline(vpninfo, timeout))
+			goto do_recheck_hip;
 		return 0;
 	case DTLS_SECRET:
 	case DTLS_SLEEPING:
-		if (!ka_check_deadline(timeout, time(NULL), vpninfo->new_dtls_started + 5)) {
-			/* Allow 5 seconds after configuration for ESP to start */
+		/* Allow 5 seconds after configuration for ESP to start */
+		if (!ka_check_deadline(timeout, time(NULL), vpninfo->new_dtls_started + 5))
 			return 0;
-		} else {
-			/* ... before we switch to HTTPS instead */
-			vpn_progress(vpninfo, PRG_ERR,
+
+		/* ... before we switch to HTTPS instead */
+		vpn_progress(vpninfo, PRG_ERR,
 				     _("Failed to connect ESP tunnel; using HTTPS instead.\n"));
-			if (gpst_connect(vpninfo)) {
-				vpninfo->quit_reason = "GPST connect failed";
-				return 1;
-			}
+		/* XX: gpst_connect does nothing if ESP is enabled and has secrets */
+		vpninfo->dtls_state = DTLS_NOSECRET;
+		if (gpst_connect(vpninfo)) {
+			vpninfo->quit_reason = "GPST connect failed";
+			return 1;
 		}
 		break;
 	case DTLS_NOSECRET:
@@ -1146,16 +1191,17 @@ int gpst_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 			vpn_progress(vpninfo, PRG_TRACE,
 				     _("Received IPv%d data packet of %d bytes\n"),
 				     ethertype == 0x86DD ? 6 : 4, payload_len);
-			vpninfo->cstp_pkt->len = payload_len;
-			queue_packet(&vpninfo->incoming_queue, vpninfo->cstp_pkt);
-			vpninfo->cstp_pkt = NULL;
-			work_done = 1;
 
 			if (one != 1 || zero != 0) {
 				vpn_progress(vpninfo, PRG_DEBUG,
 					     _("Expected 0100000000000000 as last 8 bytes of data packet header, but got:\n"));
 				dump_buf_hex(vpninfo, PRG_DEBUG, '<', vpninfo->cstp_pkt->gpst.hdr + 8, 8);
 			}
+
+			vpninfo->cstp_pkt->len = payload_len;
+			queue_packet(&vpninfo->incoming_queue, vpninfo->cstp_pkt);
+			vpninfo->cstp_pkt = NULL;
+			work_done = 1;
 			continue;
 		}
 
@@ -1204,6 +1250,29 @@ int gpst_mainloop(struct openconnect_info *vpninfo, int *timeout, int readable)
 			free(vpninfo->current_ssl_pkt);
 
 		vpninfo->current_ssl_pkt = NULL;
+	}
+
+	if (trojan_check_deadline(vpninfo, timeout)) {
+	do_recheck_hip:
+		vpn_progress(vpninfo, PRG_INFO, _("GlobalProtect HIP check due\n"));
+		/* We could just be lazy and treat this as a reconnect, but that
+		 * would require us to repull the routing configuration and new ESP
+		 * keys, instead of just redoing the HIP check/submission.
+		 *
+		 * Therefore we'll just close the HTTPS tunnel (if up),
+		 * redo the HIP check/submission, and reconnect the HTTPS tunnel
+		 * if needed.
+		 */
+		openconnect_close_https(vpninfo, 0);
+		ret = check_and_maybe_submit_hip_report(vpninfo);
+		if (ret) {
+			vpn_progress(vpninfo, PRG_ERR, _("HIP check or report failed\n"));
+			vpninfo->quit_reason = "HIP check or report failed";
+			return ret;
+		}
+		if (gpst_connect(vpninfo))
+			vpninfo->quit_reason = "GPST connect failed";
+		return 1;
 	}
 
 	switch (keepalive_action(&vpninfo->ssl_times, timeout)) {
@@ -1333,7 +1402,7 @@ int gpst_esp_send_probes(struct openconnect_info *vpninfo)
 		iph->ip_id = htons(0x4747); /* what the Windows client uses */
 		iph->ip_off = htons(IP_DF); /* don't fragment, frag offset = 0 */
 		iph->ip_ttl = 64; /* hops */
-		iph->ip_p = 1; /* ICMP */
+		iph->ip_p = IPPROTO_ICMP;
 		iph->ip_src.s_addr = inet_addr(vpninfo->ip_info.addr);
 		iph->ip_dst.s_addr = vpninfo->esp_magic;
 		iph->ip_sum = csum((uint16_t *)iph, sizeof(*iph)/2);
@@ -1346,8 +1415,9 @@ int gpst_esp_send_probes(struct openconnect_info *vpninfo)
 		icmph->icmp_cksum = csum((uint16_t *)icmph, (ICMP_MINLEN+sizeof(magic_ping_payload))/2);
 
 		pktlen = construct_esp_packet(vpninfo, pkt, IPPROTO_IPIP);
-		if (pktlen >= 0)
-			send(vpninfo->dtls_fd, (void *)&pkt->esp, pktlen, 0);
+		if (pktlen < 0 ||
+		    send(vpninfo->dtls_fd, (void *)&pkt->esp, pktlen, 0) < 0)
+			vpn_progress(vpninfo, PRG_DEBUG, _("Failed to send ESP probe\n"));
 	}
 
 	free(pkt);
@@ -1362,10 +1432,10 @@ int gpst_esp_catch_probe(struct openconnect_info *vpninfo, struct pkt *pkt)
 	struct ip *iph = (void *)(pkt->data);
 
 	return ( pkt->len >= 21 && iph->ip_v==4 /* IPv4 header */
-		 && iph->ip_p==1 /* IPv4 protocol field == ICMP */
+		 && iph->ip_p==IPPROTO_ICMP /* IPv4 protocol field == ICMP */
 		 && iph->ip_src.s_addr == vpninfo->esp_magic /* source == magic address */
 		 && pkt->len >= (iph->ip_hl<<2) + ICMP_MINLEN + sizeof(magic_ping_payload) /* No short-packet segfaults */
-		 && pkt->data[iph->ip_hl<<2]==0 /* ICMP reply */
+		 && pkt->data[iph->ip_hl<<2]==ICMP_ECHOREPLY /* ICMP reply */
 		 && !memcmp(&pkt->data[(iph->ip_hl<<2) + ICMP_MINLEN], magic_ping_payload, sizeof(magic_ping_payload)) /* Same magic payload in response */
 	       );
 }
